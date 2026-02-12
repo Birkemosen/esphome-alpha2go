@@ -1,0 +1,64 @@
+esphome:
+  name: alpha2go
+  friendly_name: "Grundfos Alpha2 Go"
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot in case wifi connection fails
+  ap:
+    ssid: "Alpha2Go Fallback"
+    password: !secret ap_password
+
+captive_portal:
+
+# Load the alpha2 component from local components folder
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [alpha2]
+
+# BLE tracker required for BLE client
+esp32_ble_tracker:
+
+# BLE client connection to the pump
+ble_client:
+  - mac_address: XX:XX:XX:XX:XX:XX  # Replace with your pump's Bluetooth MAC address
+    id: heatingpump
+
+# Alpha2 sensor platform
+sensor:
+  - platform: alpha2
+    ble_client_id: heatingpump
+    flow:
+      name: "Pump Flow"
+    head:
+      name: "Pump Head Pressure"
+    speed:
+      name: "Pump Speed"
+    power:
+      name: "Pump Power"
+    voltage:
+      name: "Pump Voltage"
+    current:
+      name: "Pump Current"

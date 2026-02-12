@@ -1,0 +1,12 @@
+# ESPHome build artifacts
+.esphome/
+
+# Secrets - do NOT commit
+secrets.yaml
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
