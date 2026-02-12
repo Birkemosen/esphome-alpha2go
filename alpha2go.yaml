@@ -27,23 +27,31 @@ wifi:
   # Enable fallback hotspot in case wifi connection fails
   ap:
     ssid: "Alpha2Go Fallback"
-    password: !secret ap_password
-
+    password: !secret fallback_hotspot_password
+  
+  manual_ip: 
+    static_ip: 192.168.20.58
+    gateway: 192.168.20.1
+    subnet: 255.255.255.0
+    
 captive_portal:
+
+# Web interface for local access
+web_server:
+  port: 80
 
 # Load the alpha2 component from local components folder
 external_components:
-  - source:
+  - source: 
       type: local
-      path: components
-    components: [alpha2]
+      path: "esphome-alpha2go/components"
 
 # BLE tracker required for BLE client
 esp32_ble_tracker:
 
 # BLE client connection to the pump
 ble_client:
-  - mac_address: XX:XX:XX:XX:XX:XX  # Replace with your pump's Bluetooth MAC address
+  - mac_address: XX:XX:XX:XX:XX:XX  # Replace with your pump's Bluetooth MAC address (use nrf Connect for mobile - android)
     id: heatingpump
 
 # Alpha2 sensor platform
