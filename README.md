@@ -22,13 +22,30 @@ This project is based on work by:
 - **ESP32-C3 Super Mini** (or any ESP32 board with BLE support)
 - **Grundfos Alpha2 Go** circulation pump
 
+Requires **ESPHome 2026.9.0** or newer.
+
 ## Setup
 
-### 1. Clone the repository
+### 1. Pull the component from GitHub
 
-```bash
-git clone git@github.com:birkemosen/esphome-alpha2go.git
-cd esphome-alpha2go
+In your ESPHome device configuration, load `alpha2` as an external component. ESPHome clones this repository and reads `components/alpha2`:
+
+```yaml
+external_components:
+  - source: github://birkemosen/esphome-alpha2go
+    components: [alpha2]
+```
+
+`alpha2go.yaml` in this repository is a complete device example that already uses that source.
+
+To compile against a local checkout instead of GitHub, point `source` at the `components` folder next to your YAML:
+
+```yaml
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [alpha2]
 ```
 
 ### 2. Configure secrets

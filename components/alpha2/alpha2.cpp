@@ -8,8 +8,7 @@
 
 #ifdef USE_ESP32
 
-namespace esphome {
-namespace alpha2 {
+namespace esphome::alpha2 {
 
 static const char *const TAG = "alpha2";
 
@@ -129,7 +128,7 @@ void Alpha2::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc
         this->current_sensor_->publish_state(NAN);
       if (this->speed_sensor_ != nullptr)
         this->speed_sensor_->publish_state(NAN);
-      if (this->speed_sensor_ != nullptr)
+      if (this->voltage_sensor_ != nullptr)
         this->voltage_sensor_->publish_state(NAN);
       break;
     }
@@ -189,7 +188,6 @@ void Alpha2::update() {
     delay(25);  // need to wait between requests
   }
 }
-}  // namespace alpha2
-}  // namespace esphome
+}  // namespace esphome::alpha2
 
 #endif
