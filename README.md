@@ -1,14 +1,82 @@
 # ESPHome Grundfos Alpha2 Go
 
-ESPHome component for reading sensor data from **Grundfos Alpha2 Go** circulation pumps via Bluetooth Low Energy (BLE) using an ESP32-C3 Super Mini.
+ESPHome component for reading sensor data from, and sending commands to, **Grundfos Alpha2 Go** circulation pumps via Bluetooth Low Energy (BLE) using an ESP32-C3 Super Mini. It talks GENIbus over the pump's BLE GENI characteristic.
 
-Reads the following values from the pump:
-- **Flow** (m³/h)
-- **Head pressure** (m)
-- **Power** (W)
-- **Voltage** (V)
-- **Current** (A)
-- **Speed** (RPM)
+> ⚠️ **Writing to the pump changes how your heating system runs.** The write actions are new and have only been checked against the protocol, not tested on every pump. Watch the ESPHome log the first time you use one: every write logs the bytes sent and the pump's ACK. The experimental `alpha2.write_object` is off by default; leave it off unless you are capturing and comparing HCI snoop logs.
+
+## Sensors
+
+All sensors are optional. Only the objects needed by the configured sensors are polled.
+
+| Key | Unit | Source object |
+| --- | --- | --- |
+| `flow` | m³/h | 93/290 offset 24 |
+| `head` | m | 93/290 offset 28 |
+| `media_temperature` | °C | 93/290 offset 16 |
+| `differential_temperature` | K | 93/290 offset 20 |
+| `flow_coefficient_kv` | – (unit not confirmed) | 93/290 offset 32 |
+| `power` | W | 87/69 offset 12 |
+| `current` | A | 87/69 offset 8 |
+| `voltage` / `grid_voltage` | V | 87/69 offset 0 (same value) |
+| `dc_link_voltage` | V | 87/69 offset 4 |
+| `speed` / `absolute_speed` | RPM | 87/69 offset 20 (same value) |
+| `converter_temperature` | °C | 87/69 offset 24 |
+| `inverter_temperature` | °C | 87/69 offset 28 |
+| `setpoint` | – (depends on control mode) | 86/8 offset 3 |
+
+Text sensors (`text_sensor` platform `alpha2`, with `alpha2_id` pointing at the sensor platform `id`), read from 86/8, which is what the pump actually runs:
+
+- `control_mode` – Constant pressure, Proportional pressure, Constant speed, AUTOadapt, Constant temperature, Constant flow, FlowAdapt
+- `operation_mode` – Auto, Stop, Min, Max, User defined
+- `control_source` – Panel, Bus
+
+`flow` and `head` now use the m³/h and m values the pump reports directly. Earlier versions converted the SI values with approximate factors, so `head` may read about 2 % higher than before.
+
+## Actions
+
+The sensor platform needs an `id` for these (`id: pump` in `alpha2go.yaml`).
+
+| Action | What it sends |
+| --- | --- |
+| `alpha2.start`, `alpha2.stop` | class 3 command START (6) / STOP (5) |
+| `alpha2.set_min`, `alpha2.set_max` | class 3 command MIN (25) / MAX (26) |
+| `alpha2.remote`, `alpha2.local` | class 3 command REMOTE (7) / LOCAL (8) |
+| `alpha2.set_control_mode` | class 3 command; `mode`: `const_pressure`, `prop_pressure`, `autoadapt`, `const_temp`, `const_flow`, `flow_adapt` |
+| `alpha2.set_setpoint_rem` | class 5 `ref_rem` (id 1); `value` 0–100 % of the active set point range, sent as 0–254 |
+| `alpha2.write_object` | **experimental** class 10 SET; needs `experimental_class10_write: true` |
+
+```yaml
+- alpha2.set_setpoint_rem:
+    id: pump
+    value: 60
+- alpha2.set_control_mode:
+    id: pump
+    mode: autoadapt
+```
+
+`alpha2.set_setpoint_rem` is the recommended way to change the set point. The pump may only follow the remote set point after `alpha2.remote`.
+
+How writes are handled:
+
+- Every frame gets its CRC computed and is checked again before it is sent. If the built-in self test of the frame builder fails at boot, all requests are disabled.
+- Writes are queued and sent one at a time, only when no other reply is outstanding, so the next reply is the write's ACK.
+- The log shows the request bytes and the ACK (`OK`, `unknown class`, `unknown id`, `illegal operation`), or a warning if no ACK arrives within 2 s.
+- After an ACK of `OK` the pump is polled again so the sensors show the new state.
+
+## Verified vs experimental
+
+| Feature | Status |
+| --- | --- |
+| Frame format, CRC-16/CCITT | Verified: the frame builder reproduces the known request frames byte for byte (self test at boot) |
+| Class 10 GET 93/290, 87/69 | Verified on hardware (the existing requests) |
+| Class 10 GET 86/8 | Request format verified; offsets taken from the Grundfos profiles |
+| Offsets in 93/290 and 87/69 | From the Grundfos profiles |
+| Temperature units | **Unverified**: values above 200 are treated as Kelvin and converted to °C |
+| Reply CRC check | **Unverified on hardware**: replies with a bad CRC are dropped and logged as `CRC mismatch` |
+| Class 3 commands | Verified in the Grundfos GO app and the Ontrol driver |
+| Class 5 `ref_rem` | Verified in the Grundfos GO app and the Ontrol driver |
+| Class 10 SET (`alpha2.write_object`) | **Experimental**: layout guessed from the GET reply, still needs confirmation with an HCI snoop log. Off by default |
+| ALPHA3 | Not tested with this component |
 
 ## Credits
 
@@ -16,6 +84,8 @@ This project is based on work by:
 
 - **[parameter-pollution/esphome-grundfos-alpha2-go](https://github.com/parameter-pollution/esphome-grundfos-alpha2-go)** — Alpha2 Go component with adjusted GENI request/response bytes discovered via Android HCI logging + Wireshark.
 - **[esphome/esphome — alpha3 component](https://github.com/esphome/esphome/tree/dev/esphome/components/alpha3)** — The original ESPHome Alpha3 component that the Alpha2 variant is derived from.
+
+GENI frame format, object layouts and command ids were checked against the Grundfos GO app and the Ontrol GENI driver.
 
 ## Hardware
 
@@ -85,6 +155,8 @@ For the first flash, connect the ESP32-C3 via USB. Subsequent updates can be don
 ## Usage with Home Assistant
 
 Once flashed and connected, the sensor entities will automatically appear in Home Assistant via the ESPHome integration.
+
+`alpha2go.yaml` also adds a set point slider (`number`), a control mode `select` and start/stop/min/max/remote/local buttons that call the actions above. Remove them if you only want to read values.
 
 ## Notes
 
