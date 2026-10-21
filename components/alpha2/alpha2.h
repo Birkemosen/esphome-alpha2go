@@ -54,6 +54,7 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   sensor::Sensor *current_sensor_{nullptr};
   sensor::Sensor *speed_sensor_{nullptr};
   sensor::Sensor *voltage_sensor_{nullptr};
+  bool geni_self_test_ok_{false};
   uint16_t geni_handle_;
   int16_t response_length_;
   int16_t response_offset_;

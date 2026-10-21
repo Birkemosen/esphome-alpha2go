@@ -2,6 +2,7 @@
 //I just figured out the new request "command" bytes and response type bytes
 
 #include "alpha2.h"
+#include "geni.h"
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
 #include <lwip/sockets.h>  //gives ntohl
@@ -22,7 +23,13 @@ void Alpha2::dump_config() {
   LOG_SENSOR(" ", "Voltage", this->voltage_sensor_);
 }
 
-void Alpha2::setup() {}
+void Alpha2::setup() {
+  this->geni_self_test_ok_ = geni::self_test();
+  if (!this->geni_self_test_ok_) {
+    ESP_LOGE(TAG, "GENI frame self test failed, all requests are disabled");
+    this->mark_failed();
+  }
+}
 
 void Alpha2::extract_publish_sensor_value_(const uint8_t *response, int16_t length, int16_t response_offset,
                                             int16_t value_offset, sensor::Sensor *sensor, float factor) {
@@ -177,14 +184,16 @@ void Alpha2::update() {
   }
 
   if (this->flow_sensor_ != nullptr || this->head_sensor_ != nullptr) {
-    uint8_t geni_request_flow_head[]   = {39, 7, 231, 248, 10, 3, 93, 1, 34, 98, 124};
-    this->send_request_(geni_request_flow_head, sizeof(geni_request_flow_head));
+    auto geni_request_flow_head = geni::build_frame(geni::SD_REQUEST, geni::ADDR_PUMP, geni::ADDR_MASTER,
+                                                    geni::class10_get(93, 290));
+    this->send_request_(geni_request_flow_head.data(), geni_request_flow_head.size());
     delay(25);  // need to wait between requests
   }
   if (this->power_sensor_ != nullptr || this->current_sensor_ != nullptr || this->speed_sensor_ != nullptr ||
       this->voltage_sensor_ != nullptr) {
-    uint8_t geni_request_power[] = {39, 7, 231, 248, 10, 3, 87, 0, 69, 138, 205};
-    this->send_request_(geni_request_power, sizeof(geni_request_power));
+    auto geni_request_power =
+        geni::build_frame(geni::SD_REQUEST, geni::ADDR_PUMP, geni::ADDR_MASTER, geni::class10_get(87, 69));
+    this->send_request_(geni_request_power.data(), geni_request_power.size());
     delay(25);  // need to wait between requests
   }
 }
