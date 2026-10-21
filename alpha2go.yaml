@@ -119,6 +119,8 @@ sensor:
       name: "Pump Setpoint"
     setpoint_head:
       name: "Pump Setpoint Head"
+    setpoint_speed:
+      name: "Pump Setpoint Speed"
     # Stored set point per control mode (ControlModeUserConfiguration)
     const_pressure_setpoint:
       name: "Pump Constant Pressure Setpoint"
@@ -135,6 +137,13 @@ text_sensor:
       name: "Pump Operation Mode"
     control_source:
       name: "Pump Control Source"
+    # I / II / III, AUTOADAPT or Advanced. The levels default to the values read
+    # from an ALPHA2 GO; check them in the log and override if your pump differs:
+    #   const_pressure_levels: [2.5, 5.0, 7.5]   # m
+    #   prop_pressure_levels: [4.0, 6.0, 8.0]    # m
+    #   const_speed_levels: [5225, 5877, 6350]
+    setting:
+      name: "Pump Setting"
 
 # --- Writing to the pump ------------------------------------------------------
 # Every write is logged (request bytes and the pump's ACK). Check the log after

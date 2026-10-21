@@ -24,6 +24,7 @@ All sensors are optional. Only the objects needed by the configured sensors are 
 | `inverter_temperature` | °C | 87/69 offset 28 |
 | `setpoint` | – (Pa in pressure modes, see below) | 86/8 offset 3 |
 | `setpoint_head` | m | 86/8 offset 3 ÷ 9804, only in pressure control modes |
+| `setpoint_speed` | RPM (unverified) | 86/8 offset 3, only in constant speed |
 | `const_pressure_setpoint` | m | 86/16 offset 2 ÷ 9804 |
 | `prop_pressure_setpoint` | m | 86/18 offset 2 ÷ 9804 |
 | `autoadapt_radiator_setpoint` | m (unverified) | 86/20 offset 2 ÷ 9804 |
@@ -34,6 +35,20 @@ Text sensors (`text_sensor` platform `alpha2`, with `alpha2_id` pointing at the 
 - `control_mode` – Constant pressure, Proportional pressure, Constant speed, AUTOadapt, Proportional pressure AUTOADAPT (13), Constant pressure AUTOADAPT (14), Constant temperature, Constant flow, FlowAdapt
 - `operation_mode` – Auto, Stop, Min, Max, User defined
 - `control_source` – Panel, Bus
+- `setting` – I, II, III, AUTOADAPT or Advanced, worked out from the set points (see the table below). In proportional pressure it uses 86/18, which is then polled even without `prop_pressure_setpoint`. A set point that matches no level, or a control mode the panel cannot select, shows as Advanced. The levels default to the values read from one ALPHA2 GO and can be set per pump:
+
+```yaml
+text_sensor:
+  - platform: alpha2
+    alpha2_id: pump
+    setting:
+      name: "Pump Setting"
+      const_pressure_levels: [2.5, 5.0, 7.5]   # m
+      prop_pressure_levels: [4.0, 6.0, 8.0]    # m
+      const_speed_levels: [5225, 5877, 6350]   # 86/8 set point
+```
+
+  Pressures match within 0.05 m (Grundfos GO uses steps of 0.1 m), speeds within 1 %. An app set point that happens to equal a level shows as that level.
 
 The realized `setpoint` is in Pa in the pressure control modes. On an ALPHA2 GO, constant pressure settings I/II/III gave exactly 24510, 49020 and 73530 Pa, i.e. 2.5, 5.0 and 7.5 m at the pump's 9804 Pa/m. `setpoint_head` shows it in m, so in constant pressure the panel setting can be read from it. 86/8 has no field for the setting itself, and in proportional pressure the realized set point moves with the flow. Temperatures read `nan` on the ALPHA2 GO, which apparently does not measure them.
 

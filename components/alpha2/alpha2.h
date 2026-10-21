@@ -15,6 +15,7 @@
 
 #include <esp_gattc_api.h>
 
+#include <array>
 #include <deque>
 #include <string>
 #include <vector>
@@ -137,6 +138,7 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   // overall_operation_realized_request (86/8)
   SUB_SENSOR(setpoint)
   SUB_SENSOR(setpoint_head)  // set point in m, only in pressure control modes
+  SUB_SENSOR(setpoint_speed)  // UNVERIFIED: set point as RPM, only in constant speed
   // ControlModeUserConfiguration local_set_point in m (86/16, 86/18, 86/20, 86/22)
   SUB_SENSOR(const_pressure_setpoint)
   SUB_SENSOR(prop_pressure_setpoint)
@@ -146,7 +148,13 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   SUB_TEXT_SENSOR(control_mode)
   SUB_TEXT_SENSOR(operation_mode)
   SUB_TEXT_SENSOR(control_source)
+  SUB_TEXT_SENSOR(setting)  // I, II, III, AUTOADAPT or Advanced
 #endif
+
+  // Panel settings I/II/III, used by the setting text sensor. Pressures in m, speed as in 86/8.
+  void set_const_pressure_levels(float i, float ii, float iii) { this->const_pressure_levels_ = {i, ii, iii}; }
+  void set_prop_pressure_levels(float i, float ii, float iii) { this->prop_pressure_levels_ = {i, ii, iii}; }
+  void set_const_speed_levels(float i, float ii, float iii) { this->const_speed_levels_ = {i, ii, iii}; }
 
   void set_experimental_class10_write(bool enabled) { this->experimental_class10_write_ = enabled; }
 
@@ -205,10 +213,21 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   size_t test_snapshot_size_{0};
   uint8_t test_version_{0};
 
+  // Last values needed to work out the panel setting.
+  uint8_t last_control_mode_{0xFF};
+  float last_set_point_{NAN};
+  float prop_pressure_hset_{NAN};  // 86/18 local_set_point in Pa
+  std::array<float, 3> const_pressure_levels_{};
+  std::array<float, 3> prop_pressure_levels_{};
+  std::array<float, 3> const_speed_levels_{};
+
   bool want_motor_state_() const;
   bool want_process_values_() const;
   bool want_operation_request_() const;
   sensor::Sensor *config_sensor_(uint16_t sub) const;
+  bool want_config_(uint16_t sub) const;
+  bool want_setting_() const;
+  void publish_setting_();
 
   void reset_link_state_();
   void publish_unavailable_();

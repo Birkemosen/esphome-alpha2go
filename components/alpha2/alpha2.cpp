@@ -7,6 +7,7 @@
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
 
@@ -121,6 +122,7 @@ void Alpha2::dump_config() {
   LOG_SENSOR(" ", "Inverter temperature", this->inverter_temperature_sensor_);
   LOG_SENSOR(" ", "Setpoint", this->setpoint_sensor_);
   LOG_SENSOR(" ", "Setpoint head", this->setpoint_head_sensor_);
+  LOG_SENSOR(" ", "Setpoint speed", this->setpoint_speed_sensor_);
   LOG_SENSOR(" ", "Constant pressure setpoint", this->const_pressure_setpoint_sensor_);
   LOG_SENSOR(" ", "Proportional pressure setpoint", this->prop_pressure_setpoint_sensor_);
   LOG_SENSOR(" ", "AUTOadapt radiator setpoint", this->autoadapt_radiator_setpoint_sensor_);
@@ -129,6 +131,15 @@ void Alpha2::dump_config() {
   LOG_TEXT_SENSOR(" ", "Control mode", this->control_mode_text_sensor_);
   LOG_TEXT_SENSOR(" ", "Operation mode", this->operation_mode_text_sensor_);
   LOG_TEXT_SENSOR(" ", "Control source", this->control_source_text_sensor_);
+  LOG_TEXT_SENSOR(" ", "Setting", this->setting_text_sensor_);
+  if (this->setting_text_sensor_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "    Constant pressure levels: %.2f / %.2f / %.2f m", this->const_pressure_levels_[0],
+                  this->const_pressure_levels_[1], this->const_pressure_levels_[2]);
+    ESP_LOGCONFIG(TAG, "    Proportional pressure levels: %.2f / %.2f / %.2f m", this->prop_pressure_levels_[0],
+                  this->prop_pressure_levels_[1], this->prop_pressure_levels_[2]);
+    ESP_LOGCONFIG(TAG, "    Constant speed levels: %.0f / %.0f / %.0f", this->const_speed_levels_[0],
+                  this->const_speed_levels_[1], this->const_speed_levels_[2]);
+  }
 #endif
   ESP_LOGCONFIG(TAG, "  GENI self test: %s", this->geni_self_test_ok_ ? "passed" : "FAILED");
   ESP_LOGCONFIG(TAG, "  Experimental class 10 write: %s", YESNO(this->experimental_class10_write_));
@@ -175,10 +186,72 @@ bool Alpha2::want_process_values_() const {
 bool Alpha2::want_operation_request_() const {
 #ifdef USE_TEXT_SENSOR
   if (this->control_mode_text_sensor_ != nullptr || this->operation_mode_text_sensor_ != nullptr ||
-      this->control_source_text_sensor_ != nullptr)
+      this->control_source_text_sensor_ != nullptr || this->setting_text_sensor_ != nullptr)
     return true;
 #endif
-  return this->setpoint_sensor_ != nullptr || this->setpoint_head_sensor_ != nullptr;
+  return this->setpoint_sensor_ != nullptr || this->setpoint_head_sensor_ != nullptr ||
+         this->setpoint_speed_sensor_ != nullptr;
+}
+
+bool Alpha2::want_setting_() const {
+#ifdef USE_TEXT_SENSOR
+  return this->setting_text_sensor_ != nullptr;
+#else
+  return false;
+#endif
+}
+
+bool Alpha2::want_config_(uint16_t sub) const {
+  // The setting text sensor needs the stored proportional pressure set point (Hset).
+  return this->config_sensor_(sub) != nullptr || (sub == OBJ_CONFIG_PROP_PRESSURE_SUB && this->want_setting_());
+}
+
+// Index of the level that matches value, or -1. Levels of 0 are not configured.
+static int match_level_(const std::array<float, 3> &levels, float value, float tolerance_abs, float tolerance_rel) {
+  if (std::isnan(value))
+    return -1;
+  for (size_t i = 0; i < levels.size(); i++) {
+    const float tolerance = std::max(tolerance_abs, levels[i] * tolerance_rel);
+    if (levels[i] > 0.0F && std::fabs(value - levels[i]) <= tolerance)
+      return static_cast<int>(i);
+  }
+  return -1;
+}
+
+void Alpha2::publish_setting_() {
+#ifdef USE_TEXT_SENSOR
+  if (this->setting_text_sensor_ == nullptr || this->last_control_mode_ == 0xFF)
+    return;
+  // Grundfos GO sets pressures in steps of 0.1 m, so 0.05 m keeps app values apart from the levels.
+  static const float PRESSURE_TOLERANCE_M = 0.05F;
+  static const float SPEED_TOLERANCE = 0.01F;  // 1 %
+  int level = -1;
+  switch (this->last_control_mode_) {
+    case 13:
+    case 14:
+      this->setting_text_sensor_->publish_state("AUTOADAPT");
+      return;
+    case 0:
+      level = match_level_(this->const_pressure_levels_, this->last_set_point_ / PUMP_PA_PER_METER,
+                           PRESSURE_TOLERANCE_M, 0.0F);
+      break;
+    case 1:
+      // 86/8 follows the curve here, so use the stored Hset from 86/18.
+      if (std::isnan(this->prop_pressure_hset_))
+        return;
+      level = match_level_(this->prop_pressure_levels_, this->prop_pressure_hset_ / PUMP_PA_PER_METER,
+                           PRESSURE_TOLERANCE_M, 0.0F);
+      break;
+    case 2:
+      level = match_level_(this->const_speed_levels_, this->last_set_point_, 0.0F, SPEED_TOLERANCE);
+      break;
+    default:
+      // Other control modes can only be chosen in Grundfos GO.
+      break;
+  }
+  static const char *const LEVELS[] = {"I", "II", "III"};
+  this->setting_text_sensor_->publish_state(level >= 0 ? LEVELS[level] : "Advanced");
+#endif
 }
 
 sensor::Sensor *Alpha2::config_sensor_(uint16_t sub) const {
@@ -222,6 +295,7 @@ void Alpha2::publish_unavailable_() {
                                this->inverter_temperature_sensor_,
                                this->setpoint_sensor_,
                                this->setpoint_head_sensor_,
+                               this->setpoint_speed_sensor_,
                                this->const_pressure_setpoint_sensor_,
                                this->prop_pressure_setpoint_sensor_,
                                this->autoadapt_radiator_setpoint_sensor_,
@@ -479,6 +553,16 @@ void Alpha2::handle_operation_request_(const uint8_t *obj, size_t size) {
     this->setpoint_head_sensor_->publish_state(
         pressure_mode ? geni::read_float_be(obj + OP_SET_POINT) / PUMP_PA_PER_METER : NAN);
   }
+  if (this->setpoint_speed_sensor_ != nullptr) {
+    // UNVERIFIED: in constant curve III the set point (6350) matched the measured speed (6356 RPM).
+    this->setpoint_speed_sensor_->publish_state(obj[OP_CONTROL_MODE] == 2 ? geni::read_float_be(obj + OP_SET_POINT)
+                                                                           : NAN);
+  }
+  this->last_control_mode_ = obj[OP_CONTROL_MODE];
+  this->last_set_point_ = geni::read_float_be(obj + OP_SET_POINT);
+  // In proportional pressure the setting is published once 86/18 has been read, which is polled next.
+  if (this->last_control_mode_ != 1 || !this->want_config_(OBJ_CONFIG_PROP_PRESSURE_SUB))
+    this->publish_setting_();
 }
 
 void Alpha2::handle_control_mode_config_(uint16_t sub, const uint8_t *obj, size_t size) {
@@ -495,6 +579,11 @@ void Alpha2::handle_control_mode_config_(uint16_t sub, const uint8_t *obj, size_
              geni::read_float_be(obj + CFG_PID_TD));
   } else {
     ESP_LOGD(TAG, "[%s]   local_set_point %.2f", this->parent_->address_str(), set_point);
+  }
+  if (sub == OBJ_CONFIG_PROP_PRESSURE_SUB) {
+    this->prop_pressure_hset_ = set_point;
+    if (this->last_control_mode_ == 1)
+      this->publish_setting_();
   }
   auto *sensor = this->config_sensor_(sub);
   // Pa, verified for 86/16 and 86/18 on an ALPHA2 GO (constant pressure I/II/III = 2.5/5.0/7.5 m,
@@ -908,7 +997,7 @@ void Alpha2::update() {
     this->request_object_(OBJ_OPERATION_ID, OBJ_OPERATION_REALIZED_SUB, TYPE_OPERATION_REQUEST);
   for (uint16_t sub : {OBJ_CONFIG_CONST_PRESSURE_SUB, OBJ_CONFIG_PROP_PRESSURE_SUB, OBJ_CONFIG_AUTOADAPT_RADIATOR_SUB,
                        OBJ_CONFIG_AUTOADAPT_UNDERFLOOR_SUB}) {
-    if (this->config_sensor_(sub) != nullptr)
+    if (this->want_config_(sub))
       this->request_object_(OBJ_OPERATION_ID, sub, TYPE_CONTROL_MODE_CONFIG);
   }
 }
