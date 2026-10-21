@@ -83,7 +83,9 @@ status_led:
 # Alpha2 sensor platform
 sensor:
   - platform: alpha2
+    id: pump                     # needed by text_sensor and the alpha2.* actions below
     ble_client_id: heatingpump
+    # experimental_class10_write: false   # UNVERIFIED class 10 SET for alpha2.write_object
     flow:
       name: "Pump Flow"
     head:
@@ -96,3 +98,96 @@ sensor:
       name: "Pump Voltage"
     current:
       name: "Pump Current"
+    # Optional extra sensors
+    media_temperature:
+      name: "Pump Media Temperature"
+    differential_temperature:
+      name: "Pump Differential Temperature"
+    flow_coefficient_kv:
+      name: "Pump Flow Coefficient Kv"
+    grid_voltage:
+      name: "Pump Grid Voltage"
+    dc_link_voltage:
+      name: "Pump DC Link Voltage"
+    absolute_speed:
+      name: "Pump Absolute Speed"
+    converter_temperature:
+      name: "Pump Converter Temperature"
+    inverter_temperature:
+      name: "Pump Inverter Temperature"
+    setpoint:
+      name: "Pump Setpoint"
+
+# What the pump actually runs (object 86/8, read only)
+text_sensor:
+  - platform: alpha2
+    alpha2_id: pump
+    control_mode:
+      name: "Pump Control Mode"
+    operation_mode:
+      name: "Pump Operation Mode"
+    control_source:
+      name: "Pump Control Source"
+
+# --- Writing to the pump ------------------------------------------------------
+# Every write is logged (request bytes and the pump's ACK). Check the log after
+# the first write. The pump may only accept a remote set point after "Pump Remote".
+
+# Remote set point in % of the active set point range (class 5 ref_rem).
+number:
+  - platform: template
+    name: "Pump Setpoint Remote"
+    icon: mdi:gauge
+    min_value: 0
+    max_value: 100
+    step: 1
+    unit_of_measurement: "%"
+    mode: slider
+    optimistic: true
+    set_action:
+      - alpha2.set_setpoint_rem:
+          id: pump
+          value: !lambda 'return x;'
+
+select:
+  - platform: template
+    name: "Pump Set Control Mode"
+    icon: mdi:tune
+    optimistic: true
+    options:
+      - autoadapt
+      - prop_pressure
+      - const_pressure
+      - const_temp
+      - const_flow
+      - flow_adapt
+    set_action:
+      - alpha2.set_control_mode:
+          id: pump
+          mode: !lambda 'return x;'
+
+button:
+  - platform: template
+    name: "Pump Start"
+    on_press:
+      - alpha2.start: pump
+  - platform: template
+    name: "Pump Stop"
+    on_press:
+      - alpha2.stop: pump
+  - platform: template
+    name: "Pump Min Curve"
+    on_press:
+      - alpha2.set_min: pump
+  - platform: template
+    name: "Pump Max Curve"
+    on_press:
+      - alpha2.set_max: pump
+  - platform: template
+    name: "Pump Remote"
+    on_press:
+      - alpha2.remote: pump
+  - platform: template
+    name: "Pump Local"
+    on_press:
+      - alpha2.local: pump
