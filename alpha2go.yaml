@@ -119,6 +119,11 @@ sensor:
       name: "Pump Setpoint"
     setpoint_head:
       name: "Pump Setpoint Head"
+    # Stored set point per control mode (ControlModeUserConfiguration)
+    const_pressure_setpoint:
+      name: "Pump Constant Pressure Setpoint"
+    prop_pressure_setpoint:
+      name: "Pump Proportional Pressure Setpoint"
 
 # What the pump actually runs (object 86/8, read only)
 text_sensor:

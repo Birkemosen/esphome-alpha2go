@@ -121,6 +121,10 @@ void Alpha2::dump_config() {
   LOG_SENSOR(" ", "Inverter temperature", this->inverter_temperature_sensor_);
   LOG_SENSOR(" ", "Setpoint", this->setpoint_sensor_);
   LOG_SENSOR(" ", "Setpoint head", this->setpoint_head_sensor_);
+  LOG_SENSOR(" ", "Constant pressure setpoint", this->const_pressure_setpoint_sensor_);
+  LOG_SENSOR(" ", "Proportional pressure setpoint", this->prop_pressure_setpoint_sensor_);
+  LOG_SENSOR(" ", "AUTOadapt radiator setpoint", this->autoadapt_radiator_setpoint_sensor_);
+  LOG_SENSOR(" ", "AUTOadapt underfloor setpoint", this->autoadapt_underfloor_setpoint_sensor_);
 #ifdef USE_TEXT_SENSOR
   LOG_TEXT_SENSOR(" ", "Control mode", this->control_mode_text_sensor_);
   LOG_TEXT_SENSOR(" ", "Operation mode", this->operation_mode_text_sensor_);
@@ -177,6 +181,21 @@ bool Alpha2::want_operation_request_() const {
   return this->setpoint_sensor_ != nullptr || this->setpoint_head_sensor_ != nullptr;
 }
 
+sensor::Sensor *Alpha2::config_sensor_(uint16_t sub) const {
+  switch (sub) {
+    case OBJ_CONFIG_CONST_PRESSURE_SUB:
+      return this->const_pressure_setpoint_sensor_;
+    case OBJ_CONFIG_PROP_PRESSURE_SUB:
+      return this->prop_pressure_setpoint_sensor_;
+    case OBJ_CONFIG_AUTOADAPT_RADIATOR_SUB:
+      return this->autoadapt_radiator_setpoint_sensor_;
+    case OBJ_CONFIG_AUTOADAPT_UNDERFLOOR_SUB:
+      return this->autoadapt_underfloor_setpoint_sensor_;
+    default:
+      return nullptr;
+  }
+}
+
 void Alpha2::reset_link_state_() {
   this->response_offset_ = 0;
   this->response_length_ = 0;
@@ -202,7 +221,11 @@ void Alpha2::publish_unavailable_() {
                                this->converter_temperature_sensor_,
                                this->inverter_temperature_sensor_,
                                this->setpoint_sensor_,
-                               this->setpoint_head_sensor_};
+                               this->setpoint_head_sensor_,
+                               this->const_pressure_setpoint_sensor_,
+                               this->prop_pressure_setpoint_sensor_,
+                               this->autoadapt_radiator_setpoint_sensor_,
+                               this->autoadapt_underfloor_setpoint_sensor_};
   for (auto *sensor : sensors) {
     if (sensor != nullptr)
       sensor->publish_state(NAN);
@@ -386,6 +409,16 @@ void Alpha2::handle_object_(const PendingRequest *request, uint16_t type, uint8_
                (unsigned) size);
       this->handle_operation_request_(obj, size);
       break;
+    case TYPE_CONTROL_MODE_CONFIG:
+      // Shared by 86/16, 86/18, 86/20 and 86/22, so the request tells which one this is.
+      if (request == nullptr || request->object_id != OBJ_OPERATION_ID) {
+        ESP_LOGD(TAG, "[%s] ignoring control mode config object from unknown id", this->parent_->address_str());
+        break;
+      }
+      ESP_LOGD(TAG, "[%s] CONTROL MODE CONFIG 86/%u Response (v%u, %u bytes)", this->parent_->address_str(),
+               request->sub_id, version, (unsigned) size);
+      this->handle_control_mode_config_(request->sub_id, obj, size);
+      break;
     default:
       ESP_LOGW(TAG, "[%s] unknown GENI object type %u (v%u, %u bytes)", this->parent_->address_str(), type, version,
                (unsigned) size);
@@ -446,6 +479,27 @@ void Alpha2::handle_operation_request_(const uint8_t *obj, size_t size) {
     this->setpoint_head_sensor_->publish_state(
         pressure_mode ? geni::read_float_be(obj + OP_SET_POINT) / PUMP_PA_PER_METER : NAN);
   }
+}
+
+void Alpha2::handle_control_mode_config_(uint16_t sub, const uint8_t *obj, size_t size) {
+  if (size < CFG_LOCAL_SET_POINT + 4) {
+    ESP_LOGW(TAG, "[%s] control mode config 86/%u too short (%u bytes)", this->parent_->address_str(), sub,
+             (unsigned) size);
+    return;
+  }
+  const float set_point = geni::read_float_be(obj + CFG_LOCAL_SET_POINT);
+  if (size >= CFG_SIZE) {
+    ESP_LOGD(TAG, "[%s]   feedback_id %u, local_set_point %.2f, pid kp %.3f ti %.3f td %.3f",
+             this->parent_->address_str(), geni::read_u16_be(obj + CFG_FEEDBACK_ID), set_point,
+             geni::read_float_be(obj + CFG_PID_KP), geni::read_float_be(obj + CFG_PID_TI),
+             geni::read_float_be(obj + CFG_PID_TD));
+  } else {
+    ESP_LOGD(TAG, "[%s]   local_set_point %.2f", this->parent_->address_str(), set_point);
+  }
+  auto *sensor = this->config_sensor_(sub);
+  // UNVERIFIED: assumed to be Pa like the realized set point in 86/8; the raw value is logged above.
+  if (sensor != nullptr)
+    sensor->publish_state(set_point / PUMP_PA_PER_METER);
 }
 
 void Alpha2::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param) {
@@ -851,6 +905,11 @@ void Alpha2::update() {
     this->request_object_(OBJ_MOTOR_STATE_ID, OBJ_MOTOR_STATE_SUB, TYPE_MOTOR_STATE);
   if (this->want_operation_request_())
     this->request_object_(OBJ_OPERATION_ID, OBJ_OPERATION_REALIZED_SUB, TYPE_OPERATION_REQUEST);
+  for (uint16_t sub : {OBJ_CONFIG_CONST_PRESSURE_SUB, OBJ_CONFIG_PROP_PRESSURE_SUB, OBJ_CONFIG_AUTOADAPT_RADIATOR_SUB,
+                       OBJ_CONFIG_AUTOADAPT_UNDERFLOOR_SUB}) {
+    if (this->config_sensor_(sub) != nullptr)
+      this->request_object_(OBJ_OPERATION_ID, sub, TYPE_CONTROL_MODE_CONFIG);
+  }
 }
 
 }  // namespace esphome::alpha2

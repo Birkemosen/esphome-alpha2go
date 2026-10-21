@@ -38,6 +38,10 @@ CONF_DC_LINK_VOLTAGE = "dc_link_voltage"
 CONF_ABSOLUTE_SPEED = "absolute_speed"
 CONF_SETPOINT = "setpoint"
 CONF_SETPOINT_HEAD = "setpoint_head"
+CONF_CONST_PRESSURE_SETPOINT = "const_pressure_setpoint"
+CONF_PROP_PRESSURE_SETPOINT = "prop_pressure_setpoint"
+CONF_AUTOADAPT_RADIATOR_SETPOINT = "autoadapt_radiator_setpoint"
+CONF_AUTOADAPT_UNDERFLOOR_SETPOINT = "autoadapt_underfloor_setpoint"
 CONF_EXPERIMENTAL_CLASS10_WRITE = "experimental_class10_write"
 
 
@@ -98,6 +102,20 @@ SENSORS = {
     CONF_SETPOINT: _measurement(),
     # Same set point in m; only published in the pressure control modes.
     CONF_SETPOINT_HEAD: _measurement(unit_of_measurement=UNIT_METER),
+    # ControlModeUserConfiguration local_set_point (86/16, 86/18, 86/20, 86/22).
+    # UNVERIFIED: converted from Pa like the realized set point.
+    CONF_CONST_PRESSURE_SETPOINT: _measurement(
+        unit_of_measurement=UNIT_METER, entity_category=ENTITY_CATEGORY_DIAGNOSTIC
+    ),
+    CONF_PROP_PRESSURE_SETPOINT: _measurement(
+        unit_of_measurement=UNIT_METER, entity_category=ENTITY_CATEGORY_DIAGNOSTIC
+    ),
+    CONF_AUTOADAPT_RADIATOR_SETPOINT: _measurement(
+        unit_of_measurement=UNIT_METER, entity_category=ENTITY_CATEGORY_DIAGNOSTIC
+    ),
+    CONF_AUTOADAPT_UNDERFLOOR_SETPOINT: _measurement(
+        unit_of_measurement=UNIT_METER, entity_category=ENTITY_CATEGORY_DIAGNOSTIC
+    ),
 }
 
 CONFIG_SCHEMA = (
