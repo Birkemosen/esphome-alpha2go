@@ -79,9 +79,11 @@ static std::string control_mode_to_string_(uint8_t value) {
       return "Constant flow";
     case 9:
       return "FlowAdapt";
+    case 13:
+      // Observed on an ALPHA2 GO with the panel set to proportional pressure + AUTOADAPT.
+      return "Proportional pressure AUTOADAPT";
     case 14:
       // Observed on an ALPHA2 GO with the panel set to constant pressure (coil icon) + AUTOADAPT.
-      // TODO: proportional pressure + AUTOADAPT (the factory setting) probably has its own value.
       return "Constant pressure AUTOADAPT";
     default:
       return "Unknown (" + to_string(value) + ")";
@@ -118,6 +120,7 @@ void Alpha2::dump_config() {
   LOG_SENSOR(" ", "Converter temperature", this->converter_temperature_sensor_);
   LOG_SENSOR(" ", "Inverter temperature", this->inverter_temperature_sensor_);
   LOG_SENSOR(" ", "Setpoint", this->setpoint_sensor_);
+  LOG_SENSOR(" ", "Setpoint head", this->setpoint_head_sensor_);
 #ifdef USE_TEXT_SENSOR
   LOG_TEXT_SENSOR(" ", "Control mode", this->control_mode_text_sensor_);
   LOG_TEXT_SENSOR(" ", "Operation mode", this->operation_mode_text_sensor_);
@@ -171,7 +174,7 @@ bool Alpha2::want_operation_request_() const {
       this->control_source_text_sensor_ != nullptr)
     return true;
 #endif
-  return this->setpoint_sensor_ != nullptr;
+  return this->setpoint_sensor_ != nullptr || this->setpoint_head_sensor_ != nullptr;
 }
 
 void Alpha2::reset_link_state_() {
@@ -198,7 +201,8 @@ void Alpha2::publish_unavailable_() {
                                this->dc_link_voltage_sensor_,
                                this->converter_temperature_sensor_,
                                this->inverter_temperature_sensor_,
-                               this->setpoint_sensor_};
+                               this->setpoint_sensor_,
+                               this->setpoint_head_sensor_};
   for (auto *sensor : sensors) {
     if (sensor != nullptr)
       sensor->publish_state(NAN);
@@ -434,6 +438,14 @@ void Alpha2::handle_operation_request_(const uint8_t *obj, size_t size) {
   // 67471 Pa was reported while head read 6.88 m (67471 / 9806.65 = 6.88).
   // TODO: confirm the unit in temperature and flow control modes.
   publish_float_(this->setpoint_sensor_, obj, size, OP_SET_POINT);
+  if (this->setpoint_head_sensor_ != nullptr) {
+    // Pa in the pressure modes (verified for constant pressure I/II/III on an ALPHA2 GO).
+    // Other modes use other units (constant speed reported 5225), so publish nothing there.
+    const uint8_t mode = obj[OP_CONTROL_MODE];
+    const bool pressure_mode = mode == 0 || mode == 1 || mode == 13 || mode == 14;
+    this->setpoint_head_sensor_->publish_state(
+        pressure_mode ? geni::read_float_be(obj + OP_SET_POINT) / PUMP_PA_PER_METER : NAN);
+  }
 }
 
 void Alpha2::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param) {

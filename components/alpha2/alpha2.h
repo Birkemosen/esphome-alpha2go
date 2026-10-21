@@ -79,6 +79,10 @@ static const size_t OP_CONTROL_MODE = 2;
 static const size_t OP_SET_POINT = 3;
 static const size_t OP_SIZE = 7;
 
+// The pump converts head to pressure with 9804 Pa/m: constant pressure settings I/II/III were
+// reported as exactly 24510, 49020 and 73530 Pa (2.5, 5.0 and 7.5 m).
+static const float PUMP_PA_PER_METER = 9804.0F;
+
 // AutoNight enable (1 byte bool)
 static const uint16_t TYPE_AUTONIGHT = 333;
 
@@ -118,6 +122,7 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   SUB_SENSOR(flow_coefficient_kv)
   // overall_operation_realized_request (86/8)
   SUB_SENSOR(setpoint)
+  SUB_SENSOR(setpoint_head)  // set point in m, only in pressure control modes
 #ifdef USE_TEXT_SENSOR
   SUB_TEXT_SENSOR(control_mode)
   SUB_TEXT_SENSOR(operation_mode)

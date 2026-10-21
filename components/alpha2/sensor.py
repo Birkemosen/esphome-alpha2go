@@ -37,6 +37,7 @@ CONF_GRID_VOLTAGE = "grid_voltage"
 CONF_DC_LINK_VOLTAGE = "dc_link_voltage"
 CONF_ABSOLUTE_SPEED = "absolute_speed"
 CONF_SETPOINT = "setpoint"
+CONF_SETPOINT_HEAD = "setpoint_head"
 CONF_EXPERIMENTAL_CLASS10_WRITE = "experimental_class10_write"
 
 
@@ -95,6 +96,8 @@ SENSORS = {
     # overall_operation_realized_request (86/8)
     # TODO: the set point unit depends on the control mode, so none is set by default.
     CONF_SETPOINT: _measurement(),
+    # Same set point in m; only published in the pressure control modes.
+    CONF_SETPOINT_HEAD: _measurement(unit_of_measurement=UNIT_METER),
 }
 
 CONFIG_SCHEMA = (

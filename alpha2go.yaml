@@ -117,6 +117,8 @@ sensor:
       name: "Pump Inverter Temperature"
     setpoint:
       name: "Pump Setpoint"
+    setpoint_head:
+      name: "Pump Setpoint Head"
 
 # What the pump actually runs (object 86/8, read only)
 text_sensor:
