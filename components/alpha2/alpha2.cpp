@@ -133,20 +133,20 @@ void Alpha2::setup() {
 
 void Alpha2::loop() {
   this->expire_pending_();
-  if (this->write_queue_.empty())
+  if (this->queue_.empty())
     return;
   if (this->node_state != espbt::ClientState::ESTABLISHED) {
-    ESP_LOGW(TAG, "[%s] not connected, dropping %u queued write(s)", this->parent_->address_str(),
-             (unsigned) this->write_queue_.size());
-    this->write_queue_.clear();
+    ESP_LOGW(TAG, "[%s] not connected, dropping %u queued request(s)", this->parent_->address_str(),
+             (unsigned) this->queue_.size());
+    this->queue_.clear();
     if (this->test_running_)
       this->test_abort_("disconnected");
     return;
   }
-  // One write at a time and only when nothing else is outstanding, so the next reply is its ACK.
+  // One frame at a time and only when nothing else is outstanding, so the next reply belongs to it.
   if (!this->pending_.empty() || millis() - this->last_tx_ms_ < GENI_REQUEST_SPACING_MS)
     return;
-  this->send_next_write_();
+  this->send_next_frame_();
 }
 
 bool Alpha2::want_motor_state_() const {
@@ -174,7 +174,7 @@ void Alpha2::reset_link_state_() {
   this->response_offset_ = 0;
   this->response_length_ = 0;
   this->pending_.clear();
-  this->write_queue_.clear();
+  this->queue_.clear();
   if (this->test_running_)
     this->test_abort_("connection reset");
 }
@@ -218,9 +218,13 @@ void Alpha2::expire_pending_() {
   }
 }
 
-bool Alpha2::pop_pending_(uint8_t apdu_class, PendingRequest *out) {
+bool Alpha2::pop_pending_(uint8_t apdu_class, uint16_t reply_type, PendingRequest *out) {
   for (size_t i = 0; i < this->pending_.size(); i++) {
-    if (this->pending_[i].apdu_class != apdu_class)
+    const auto &candidate = this->pending_[i];
+    if (candidate.apdu_class != apdu_class)
+      continue;
+    // A late reply to a request that already timed out carries a different object type.
+    if (candidate.expected_type != 0 && reply_type != 0 && candidate.expected_type != reply_type)
       continue;
     // Replies come in send order, so anything before the match was lost.
     for (size_t j = 0; j < i; j++) {
@@ -301,8 +305,11 @@ void Alpha2::handle_frame_(const uint8_t *frame, size_t len) {
 }
 
 void Alpha2::handle_apdu_(uint8_t apdu_class, uint8_t ack, const uint8_t *data, size_t len) {
+  uint16_t reply_type = 0;
+  if (apdu_class == geni::CLASS_DATA_OBJECT && ack == geni::ACK_OK && len >= 3 && data[0] == 0)
+    reply_type = geni::read_u16_be(data + 1);
   PendingRequest request{};
-  const bool known = this->pop_pending_(apdu_class, &request);
+  const bool known = this->pop_pending_(apdu_class, reply_type, &request);
   if (!known)
     ESP_LOGD(TAG, "[%s] unsolicited class %u reply", this->parent_->address_str(), apdu_class);
   if (known && request.test_step != TEST_NONE) {
@@ -419,7 +426,9 @@ void Alpha2::handle_operation_request_(const uint8_t *obj, size_t size) {
   if (this->control_mode_text_sensor_ != nullptr)
     this->control_mode_text_sensor_->publish_state(control_mode_to_string_(obj[OP_CONTROL_MODE]));
 #endif
-  // TODO: the unit of the set point depends on the control mode and is not documented here.
+  // The unit depends on the control mode. In pressure modes it appears to be Pa: on an ALPHA2 GO
+  // 67471 Pa was reported while head read 6.88 m (67471 / 9806.65 = 6.88).
+  // TODO: confirm the unit in temperature and flow control modes.
   publish_float_(this->setpoint_sensor_, obj, size, OP_SET_POINT);
 }
 
@@ -510,42 +519,67 @@ void Alpha2::handle_write_ack_(const PendingRequest &request, uint8_t ack) {
   this->set_timeout("refresh", GENI_REFRESH_AFTER_WRITE_MS, [this]() { this->update(); });
 }
 
-bool Alpha2::queue_write_(const std::vector<uint8_t> &apdu, std::string label, bool is_write, uint8_t test_step) {
+bool Alpha2::queue_frame_(const std::vector<uint8_t> &apdu, PendingRequest pending) {
+  const char *kind = pending.is_write ? "write" : "read";
+  const char *label = pending.label.empty() ? "poll" : pending.label.c_str();
   if (!this->geni_self_test_ok_) {
-    ESP_LOGE(TAG, "[%s] write %s refused: GENI self test failed", this->parent_->address_str(), label.c_str());
+    ESP_LOGE(TAG, "[%s] %s %s refused: GENI self test failed", this->parent_->address_str(), kind, label);
     return false;
   }
   if (this->node_state != espbt::ClientState::ESTABLISHED) {
-    ESP_LOGW(TAG, "[%s] write %s refused: not connected", this->parent_->address_str(), label.c_str());
+    ESP_LOGW(TAG, "[%s] %s %s refused: not connected", this->parent_->address_str(), kind, label);
     return false;
   }
-  if (this->write_queue_.size() >= GENI_WRITE_QUEUE_MAX) {
-    ESP_LOGW(TAG, "[%s] write %s refused: queue full", this->parent_->address_str(), label.c_str());
+  if (this->queue_.size() >= GENI_QUEUE_MAX) {
+    ESP_LOGW(TAG, "[%s] %s %s refused: queue full", this->parent_->address_str(), kind, label);
     return false;
   }
-  // SD_REQUEST so the pump always answers with an ACK.
+  // SD_REQUEST so the pump always answers (with data or an ACK).
   auto frame = geni::build_frame(geni::SD_REQUEST, geni::ADDR_PUMP, geni::ADDR_MASTER, apdu);
   if (apdu.empty() || frame.empty() || !geni::verify_frame(frame.data(), frame.size())) {
-    ESP_LOGE(TAG, "[%s] write %s refused: could not build a valid frame", this->parent_->address_str(),
-             label.c_str());
+    ESP_LOGE(TAG, "[%s] %s %s refused: could not build a valid frame", this->parent_->address_str(), kind, label);
     return false;
   }
-  this->write_queue_.push_back(WriteRequest{std::move(frame), std::move(label), is_write, test_step});
+  pending.apdu_class = apdu[0];
+  this->queue_.push_back(QueuedFrame{std::move(frame), std::move(pending)});
   return true;
 }
 
-void Alpha2::send_next_write_() {
-  WriteRequest write = std::move(this->write_queue_.front());
-  this->write_queue_.pop_front();
-  HexBuffer buf;
-  ESP_LOGI(TAG, "[%s] %s %s: %s", this->parent_->address_str(), write.is_write ? "write" : "read",
-           write.label.c_str(), hex_(buf, write.frame.data(), write.frame.size()));
+bool Alpha2::queue_write_(const std::vector<uint8_t> &apdu, std::string label, bool is_write, uint8_t test_step) {
   PendingRequest pending{};
-  pending.apdu_class = write.frame[4];
-  pending.is_write = write.is_write;
-  pending.test_step = write.test_step;
-  pending.label = std::move(write.label);
-  this->send_frame_(write.frame, pending);
+  pending.is_write = is_write;
+  pending.test_step = test_step;
+  pending.label = std::move(label);
+  if (test_step == TEST_READ_BEFORE || test_step == TEST_READ_AFTER)
+    pending.expected_type = this->test_expected_type_();
+  return this->queue_frame_(apdu, std::move(pending));
+}
+
+void Alpha2::send_next_frame_() {
+  QueuedFrame queued = std::move(this->queue_.front());
+  this->queue_.pop_front();
+  HexBuffer buf;
+  const auto &pending = queued.pending;
+  if (pending.is_write || pending.test_step != TEST_NONE) {
+    ESP_LOGI(TAG, "[%s] %s %s: %s", this->parent_->address_str(), pending.is_write ? "write" : "read",
+             pending.label.c_str(), hex_(buf, queued.frame.data(), queued.frame.size()));
+  } else {
+    ESP_LOGV(TAG, "[%s] poll %u/%u: %s", this->parent_->address_str(), pending.object_id, pending.sub_id,
+             hex_(buf, queued.frame.data(), queued.frame.size()));
+  }
+  this->send_frame_(queued.frame, queued.pending);
+}
+
+bool Alpha2::poll_in_progress_() const {
+  for (const auto &q : this->queue_) {
+    if (!q.pending.is_write && q.pending.test_step == TEST_NONE)
+      return true;
+  }
+  for (const auto &p : this->pending_) {
+    if (!p.is_write && p.test_step == TEST_NONE)
+      return true;
+  }
+  return false;
 }
 
 bool Alpha2::send_command(uint8_t command, const char *name) {
@@ -599,13 +633,48 @@ bool Alpha2::write_object(uint8_t id, uint16_t sub, uint16_t type, uint8_t versi
 }
 
 const char *Alpha2::test_target_name_() const {
-  return this->test_target_ == WRITE_TEST_AUTONIGHT ? "autonight 90/8" : "ref_rem";
+  switch (this->test_target_) {
+    case WRITE_TEST_AUTONIGHT:
+      return "autonight 90/8";
+    case WRITE_TEST_START:
+      return "start";
+    default:
+      return "ref_rem";
+  }
 }
 
 std::vector<uint8_t> Alpha2::test_read_apdu_() const {
-  if (this->test_target_ == WRITE_TEST_AUTONIGHT)
-    return geni::class10_get(OBJ_AUTONIGHT_ID, OBJ_AUTONIGHT_SUB);
-  return geni::classic_get(geni::CLASS_REFERENCE, geni::REF_REM);
+  switch (this->test_target_) {
+    case WRITE_TEST_AUTONIGHT:
+      return geni::class10_get(OBJ_AUTONIGHT_ID, OBJ_AUTONIGHT_SUB);
+    case WRITE_TEST_START:
+      return geni::class10_get(OBJ_OPERATION_ID, OBJ_OPERATION_REALIZED_SUB);
+    default:
+      return geni::classic_get(geni::CLASS_REFERENCE, geni::REF_REM);
+  }
+}
+
+uint16_t Alpha2::test_expected_type_() const {
+  switch (this->test_target_) {
+    case WRITE_TEST_AUTONIGHT:
+      return TYPE_AUTONIGHT;
+    case WRITE_TEST_START:
+      return TYPE_OPERATION_REQUEST;
+    default:
+      return 0;
+  }
+}
+
+std::vector<uint8_t> Alpha2::test_write_apdu_() const {
+  switch (this->test_target_) {
+    case WRITE_TEST_AUTONIGHT:
+      return geni::class10_set(OBJ_AUTONIGHT_ID, OBJ_AUTONIGHT_SUB, TYPE_AUTONIGHT, this->test_version_,
+                               {this->test_snapshot_[0]});
+    case WRITE_TEST_START:
+      return geni::classic_command(geni::CMD_START);
+    default:
+      return geni::classic_set(geni::CLASS_REFERENCE, geni::REF_REM, this->test_snapshot_[0]);
+  }
 }
 
 bool Alpha2::write_test(WriteTestTarget target) {
@@ -620,8 +689,8 @@ bool Alpha2::write_test(WriteTestTarget target) {
   }
   this->test_target_ = target;
   this->test_running_ = true;
-  ESP_LOGI(TAG, "[%s] write test %s: read, write the same value back, read again", this->parent_->address_str(),
-           this->test_target_name_());
+  ESP_LOGI(TAG, "[%s] write test %s: read, write without changing the state, read again",
+           this->parent_->address_str(), this->test_target_name_());
   if (!this->queue_write_(this->test_read_apdu_(), std::string("test ") + this->test_target_name_(), false,
                           TEST_READ_BEFORE)) {
     this->test_running_ = false;
@@ -630,20 +699,24 @@ bool Alpha2::write_test(WriteTestTarget target) {
   return true;
 }
 
-bool Alpha2::test_extract_value_(uint8_t apdu_class, const uint8_t *data, size_t len, uint8_t *value,
-                                 uint8_t *version) {
+bool Alpha2::test_extract_(uint8_t apdu_class, const uint8_t *data, size_t len, uint8_t *out, size_t *out_size,
+                           uint8_t *version) {
   if (this->test_target_ == WRITE_TEST_REF_REM) {
     if (apdu_class != geni::CLASS_REFERENCE || len < 1)
       return false;
-    *value = data[0];
+    out[0] = data[0];
+    *out_size = 1;
     *version = 0;
     return true;
   }
+  const uint16_t type = this->test_expected_type_();
+  const size_t size = this->test_target_ == WRITE_TEST_START ? OP_SIZE : 1;
   geni::Class10Object obj;
   if (apdu_class != geni::CLASS_DATA_OBJECT || !geni::parse_class10_object(data, len, &obj) || obj.status != 0 ||
-      obj.type != TYPE_AUTONIGHT || obj.size < 1)
+      obj.type != type || obj.size < size)
     return false;
-  *value = obj.data[0];
+  std::memcpy(out, obj.data, size);
+  *out_size = size;
   *version = obj.version;
   return true;
 }
@@ -672,63 +745,77 @@ void Alpha2::handle_write_test_(const PendingRequest &request, uint8_t apdu_clas
     return;
   }
 
+  const bool before = request.test_step == TEST_READ_BEFORE;
   if (ack != geni::ACK_OK) {
     ESP_LOGW(TAG, "[%s] read %s: ACK %u (%s)", this->parent_->address_str(), name, ack, geni::ack_to_string(ack));
-    this->test_abort_(request.test_step == TEST_READ_BEFORE ? "read rejected, nothing was written"
-                                                             : "read back rejected");
+    this->test_abort_(before ? "read rejected, nothing was written" : "read back rejected");
     return;
   }
-  uint8_t value = 0;
+  uint8_t value[OP_SIZE];
+  size_t size = 0;
   uint8_t version = 0;
-  if (!this->test_extract_value_(apdu_class, data, len, &value, &version)) {
-    this->test_abort_(request.test_step == TEST_READ_BEFORE ? "unexpected reply, nothing was written"
-                                                             : "unexpected read back reply");
+  if (!this->test_extract_(apdu_class, data, len, value, &size, &version)) {
+    this->test_abort_(before ? "unexpected reply, nothing was written" : "unexpected read back reply");
     return;
   }
+  HexBuffer buf;
 
-  if (request.test_step == TEST_READ_BEFORE) {
-    if (this->test_target_ == WRITE_TEST_REF_REM && value == GENI_VALUE_NOT_AVAILABLE) {
-      this->test_abort_("ref_rem not available (255), nothing was written");
+  if (before) {
+    if (this->test_target_ == WRITE_TEST_REF_REM && value[0] == GENI_VALUE_NOT_AVAILABLE) {
+      this->test_abort_("ref_rem not available (255, pump probably not in remote mode), nothing was written");
       return;
     }
-    this->test_value_ = value;
+    if (this->test_target_ == WRITE_TEST_START && value[OP_OPERATION_MODE] != 0) {
+      this->test_abort_("pump is not running in Auto, nothing was written");
+      return;
+    }
+    std::memcpy(this->test_snapshot_, value, size);
+    this->test_snapshot_size_ = size;
     this->test_version_ = version;
-    ESP_LOGI(TAG, "[%s] write test %s: current value %u", this->parent_->address_str(), name, value);
-    char label[48];
-    snprintf(label, sizeof(label), "test %s = %u (unchanged)", name, value);
-    const auto apdu = this->test_target_ == WRITE_TEST_AUTONIGHT
-                          ? geni::class10_set(OBJ_AUTONIGHT_ID, OBJ_AUTONIGHT_SUB, TYPE_AUTONIGHT, version, {value})
-                          : geni::classic_set(geni::CLASS_REFERENCE, geni::REF_REM, value);
-    if (!this->queue_write_(apdu, label, true, TEST_WRITE))
+    ESP_LOGI(TAG, "[%s] write test %s: state before %s", this->parent_->address_str(), name, hex_(buf, value, size));
+    if (!this->queue_write_(this->test_write_apdu_(), std::string("test ") + name, true, TEST_WRITE))
       this->test_abort_("could not queue write");
     return;
   }
 
   // TEST_READ_AFTER
   this->test_running_ = false;
-  if (value == this->test_value_) {
-    ESP_LOGI(TAG, "[%s] write test %s PASSED: value still %u after write", this->parent_->address_str(), name, value);
+  ESP_LOGI(TAG, "[%s] write test %s: state after  %s", this->parent_->address_str(), name, hex_(buf, value, size));
+  if (this->test_target_ == WRITE_TEST_START) {
+    // Source, operation mode and control mode must not change. The realized set point may drift
+    // on its own (AUTOadapt), so it is only reported.
+    const bool same = std::memcmp(value, this->test_snapshot_, OP_SET_POINT) == 0;
+    const float sp_before = geni::read_float_be(this->test_snapshot_ + OP_SET_POINT);
+    const float sp_after = geni::read_float_be(value + OP_SET_POINT);
+    if (same) {
+      ESP_LOGI(TAG, "[%s] write test start PASSED: state unchanged (set point %.1f -> %.1f)",
+               this->parent_->address_str(), sp_before, sp_after);
+      return;
+    }
+    ESP_LOGW(TAG, "[%s] write test start FAILED: state changed", this->parent_->address_str());
+    if (value[OP_CONTROL_SOURCE] != this->test_snapshot_[OP_CONTROL_SOURCE]) {
+      ESP_LOGW(TAG, "[%s] control source changed, sending LOCAL to hand control back to the panel",
+               this->parent_->address_str());
+      this->queue_write_(geni::classic_command(geni::CMD_LOCAL), "restore local");
+    }
+    return;
+  }
+  if (std::memcmp(value, this->test_snapshot_, size) == 0) {
+    ESP_LOGI(TAG, "[%s] write test %s PASSED: value still %u after write", this->parent_->address_str(), name,
+             value[0]);
     return;
   }
   ESP_LOGW(TAG, "[%s] write test %s FAILED: value changed from %u to %u, writing %u back",
-           this->parent_->address_str(), name, this->test_value_, value, this->test_value_);
-  if (this->test_target_ == WRITE_TEST_AUTONIGHT) {
-    this->queue_write_(geni::class10_set(OBJ_AUTONIGHT_ID, OBJ_AUTONIGHT_SUB, TYPE_AUTONIGHT, this->test_version_,
-                                         {this->test_value_}),
-                       "restore autonight");
-  } else {
-    this->queue_write_(geni::classic_set(geni::CLASS_REFERENCE, geni::REF_REM, this->test_value_), "restore ref_rem");
-  }
+           this->parent_->address_str(), name, this->test_snapshot_[0], value[0], this->test_snapshot_[0]);
+  this->queue_write_(this->test_write_apdu_(), std::string("restore ") + name);
 }
 
-void Alpha2::request_object_(uint8_t id, uint16_t sub) {
-  auto frame = geni::build_frame(geni::SD_REQUEST, geni::ADDR_PUMP, geni::ADDR_MASTER, geni::class10_get(id, sub));
+void Alpha2::request_object_(uint8_t id, uint16_t sub, uint16_t type) {
   PendingRequest pending{};
-  pending.apdu_class = geni::CLASS_DATA_OBJECT;
   pending.object_id = id;
   pending.sub_id = sub;
-  this->send_frame_(frame, pending);
-  delay(25);  // need to wait between requests
+  pending.expected_type = type;
+  this->queue_frame_(geni::class10_get(id, sub), std::move(pending));
 }
 
 void Alpha2::update() {
@@ -736,13 +823,18 @@ void Alpha2::update() {
     ESP_LOGW(TAG, "[%s] Cannot poll, not connected", this->parent_->address_str());
     return;
   }
+  if (this->poll_in_progress_()) {
+    ESP_LOGD(TAG, "[%s] previous poll still in progress, skipping", this->parent_->address_str());
+    return;
+  }
 
+  // Queued and sent one by one from loop(), so update() never blocks.
   if (this->want_process_values_())
-    this->request_object_(OBJ_PROCESS_VALUES_ID, OBJ_PROCESS_VALUES_SUB);
+    this->request_object_(OBJ_PROCESS_VALUES_ID, OBJ_PROCESS_VALUES_SUB, TYPE_PROCESS_VALUES_EXT);
   if (this->want_motor_state_())
-    this->request_object_(OBJ_MOTOR_STATE_ID, OBJ_MOTOR_STATE_SUB);
+    this->request_object_(OBJ_MOTOR_STATE_ID, OBJ_MOTOR_STATE_SUB, TYPE_MOTOR_STATE);
   if (this->want_operation_request_())
-    this->request_object_(OBJ_OPERATION_ID, OBJ_OPERATION_REALIZED_SUB);
+    this->request_object_(OBJ_OPERATION_ID, OBJ_OPERATION_REALIZED_SUB, TYPE_OPERATION_REQUEST);
 }
 
 }  // namespace esphome::alpha2

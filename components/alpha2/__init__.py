@@ -40,6 +40,8 @@ WRITE_TEST_TARGETS = {
     "ref_rem": WriteTestTarget.WRITE_TEST_REF_REM,
     # UNVERIFIED class 10 SET of AutoNight 90/8, needs experimental_class10_write: true
     "autonight": WriteTestTarget.WRITE_TEST_AUTONIGHT,
+    # class 3 START, only sent if 86/8 shows the pump already running in Auto
+    "start": WriteTestTarget.WRITE_TEST_START,
 }
 
 # Classic GENI class 3 commands, verified in the Grundfos GO app and the Ontrol driver.

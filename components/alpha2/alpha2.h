@@ -31,12 +31,12 @@ static const espbt::ESPBTUUID ALPHA2_GENI_CHARACTERISTIC_UUID = espbt::ESPBTUUID
 
 // A reply split over several notifications is dropped if the next part takes longer than this.
 static const uint32_t GENI_FRAGMENT_TIMEOUT_MS = 500;
-// Requests without a reply are forgotten after this time.
-static const uint32_t GENI_REPLY_TIMEOUT_MS = 2000;
+// Requests without a reply are forgotten after this time. Replies normally take 10-100 ms.
+static const uint32_t GENI_REPLY_TIMEOUT_MS = 1000;
 // Minimum time between two frames sent to the pump.
 static const uint32_t GENI_REQUEST_SPACING_MS = 25;
-// Writes waiting to be sent; more are refused.
-static const size_t GENI_WRITE_QUEUE_MAX = 8;
+// Frames waiting to be sent (polls and writes); more are refused.
+static const size_t GENI_QUEUE_MAX = 12;
 // Delay before polling again after a write was acknowledged, so the new state shows up quickly.
 static const uint32_t GENI_REFRESH_AFTER_WRITE_MS = 500;
 
@@ -88,6 +88,7 @@ static const uint8_t GENI_VALUE_NOT_AVAILABLE = 0xFF;
 enum WriteTestTarget : uint8_t {
   WRITE_TEST_REF_REM = 0,    // class 5 ref_rem (verified write path)
   WRITE_TEST_AUTONIGHT = 1,  // class 10 SET 90/8 (UNVERIFIED, needs experimental_class10_write)
+  WRITE_TEST_START = 2,      // class 3 START, only sent if the pump already runs in Auto
 };
 
 class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingComponent {
@@ -134,8 +135,8 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   bool set_setpoint_rem(float percent);
   // UNVERIFIED: class 10 SET, only available with experimental_class10_write enabled.
   bool write_object(uint8_t id, uint16_t sub, uint16_t type, uint8_t version, const std::vector<uint8_t> &data);
-  // Reads a value, writes the same value back and reads it again. Nothing is written if the
-  // first read fails. Logs PASSED / FAILED.
+  // Reads the current state, writes something that should not change it and reads again.
+  // Nothing is written if the first read fails or the precondition is not met. Logs PASSED / FAILED.
   bool write_test(WriteTestTarget target);
 
  protected:
@@ -143,18 +144,18 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
     uint8_t apdu_class;
     uint8_t object_id;  // class 10 reads only
     uint16_t sub_id;    // class 10 reads only
+    uint16_t expected_type;  // class 10 reads: object type the reply must carry, 0 = any
     uint32_t sent_ms;
     bool is_write;
     uint8_t test_step;  // TestStep, 0 = not part of the write test
-    std::string label;  // writes only, for logging
+    std::string label;  // writes and tests, for logging
   };
 
-  // Frames sent from loop() one at a time (writes and the reads of the write test).
-  struct WriteRequest {
+  // Frames are sent from loop() one at a time: the next one goes out after the previous reply
+  // arrived or timed out. The pump drops requests that arrive while it is still answering.
+  struct QueuedFrame {
     std::vector<uint8_t> frame;
-    std::string label;
-    bool is_write;
-    uint8_t test_step;
+    PendingRequest pending;
   };
 
   enum TestStep : uint8_t { TEST_NONE = 0, TEST_READ_BEFORE = 1, TEST_WRITE = 2, TEST_READ_AFTER = 3 };
@@ -171,12 +172,13 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
 
   // Requests sent but not answered yet, in send order. Replies arrive in the same order.
   std::deque<PendingRequest> pending_;
-  std::deque<WriteRequest> write_queue_;
+  std::deque<QueuedFrame> queue_;
   uint32_t last_tx_ms_{0};
   bool experimental_class10_write_{false};
   bool test_running_{false};
   WriteTestTarget test_target_{WRITE_TEST_REF_REM};
-  uint8_t test_value_{0};
+  uint8_t test_snapshot_[OP_SIZE]{};
+  size_t test_snapshot_size_{0};
   uint8_t test_version_{0};
 
   bool want_motor_state_() const;
@@ -186,20 +188,25 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   void reset_link_state_();
   void publish_unavailable_();
   void expire_pending_();
-  bool pop_pending_(uint8_t apdu_class, PendingRequest *out);
+  bool pop_pending_(uint8_t apdu_class, uint16_t reply_type, PendingRequest *out);
+  bool poll_in_progress_() const;
 
   void send_request_(uint8_t *request, size_t len);
   bool send_frame_(const std::vector<uint8_t> &frame, const PendingRequest &pending);
-  void request_object_(uint8_t id, uint16_t sub);
+  void request_object_(uint8_t id, uint16_t sub, uint16_t type);
+  bool queue_frame_(const std::vector<uint8_t> &apdu, PendingRequest pending);
   bool queue_write_(const std::vector<uint8_t> &apdu, std::string label, bool is_write = true,
                     uint8_t test_step = TEST_NONE);
   const char *test_target_name_() const;
   std::vector<uint8_t> test_read_apdu_() const;
-  bool test_extract_value_(uint8_t apdu_class, const uint8_t *data, size_t len, uint8_t *value, uint8_t *version);
+  uint16_t test_expected_type_() const;
+  bool test_extract_(uint8_t apdu_class, const uint8_t *data, size_t len, uint8_t *out, size_t *out_size,
+                     uint8_t *version);
+  std::vector<uint8_t> test_write_apdu_() const;
   void test_abort_(const char *reason);
   void handle_write_test_(const PendingRequest &request, uint8_t apdu_class, uint8_t ack, const uint8_t *data,
                           size_t len);
-  void send_next_write_();
+  void send_next_frame_();
   void handle_write_ack_(const PendingRequest &request, uint8_t ack);
 
   void handle_geni_response_(const uint8_t *response, uint16_t length);

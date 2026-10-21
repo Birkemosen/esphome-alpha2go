@@ -175,6 +175,16 @@ button:
     entity_category: diagnostic
     on_press:
       - alpha2.write_test: pump
+  # If the pump is run from its panel, ref_rem is not set and the test above stops
+  # without writing. This one sends START, but only if the pump already runs in Auto.
+  - platform: template
+    name: "Pump Write Test Start"
+    icon: mdi:test-tube
+    entity_category: diagnostic
+    on_press:
+      - alpha2.write_test:
+          id: pump
+          target: start
   # Same test for the UNVERIFIED class 10 SET path (AutoNight 90/8, written back unchanged).
   # Needs experimental_class10_write: true on the sensor platform.
   # - platform: template

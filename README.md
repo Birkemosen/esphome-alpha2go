@@ -22,13 +22,15 @@ All sensors are optional. Only the objects needed by the configured sensors are 
 | `speed` / `absolute_speed` | RPM | 87/69 offset 20 (same value) |
 | `converter_temperature` | °C | 87/69 offset 24 |
 | `inverter_temperature` | °C | 87/69 offset 28 |
-| `setpoint` | – (depends on control mode) | 86/8 offset 3 |
+| `setpoint` | – (Pa in pressure modes, see below) | 86/8 offset 3 |
 
 Text sensors (`text_sensor` platform `alpha2`, with `alpha2_id` pointing at the sensor platform `id`), read from 86/8, which is what the pump actually runs:
 
 - `control_mode` – Constant pressure, Proportional pressure, Constant speed, AUTOadapt, Constant temperature, Constant flow, FlowAdapt
 - `operation_mode` – Auto, Stop, Min, Max, User defined
 - `control_source` – Panel, Bus
+
+The realized `setpoint` appears to be in Pa in pressure control modes: an ALPHA2 GO reported 67471 while `head` read 6.88 m (67471 / 9806.65 = 6.88). Add `filters: [multiply: 0.000101972]` to show it in m. Temperatures read `nan` on the ALPHA2 GO, which apparently does not measure them.
 
 `flow` and `head` now use the m³/h and m values the pump reports directly. Earlier versions converted the SI values with approximate factors, so `head` may read about 2 % higher than before.
 
@@ -58,23 +60,30 @@ The sensor platform needs an `id` for these (`id: pump` in `alpha2go.yaml`).
 
 ### Safe write test
 
-`alpha2.write_test` tests the write path without changing anything on the pump. It reads the current value, writes the **same** value back and reads it again, and logs `write test ... PASSED` or `FAILED` with the reason. If the first read fails, nothing is written. If the value has changed after the write, the original value is written back.
+`alpha2.write_test` tests the write path without changing anything on the pump. It reads the current state, sends a write that should leave it unchanged, reads again and logs `write test ... PASSED` or `FAILED` with the reason. Nothing is written if the first read fails or the precondition is not met.
+
+| `target` | Write | Precondition | If the state changed anyway |
+| --- | --- | --- | --- |
+| `ref_rem` (default) | class 5 `ref_rem` = current value | `ref_rem` is not 255 (only set in remote mode) | original value written back |
+| `start` | class 3 START | 86/8 shows operation mode Auto | LOCAL sent if the control source changed |
+| `autonight` | **UNVERIFIED** class 10 SET of 90/8 = current value; needs `experimental_class10_write: true` | – | original value written back |
 
 ```yaml
-- alpha2.write_test: pump              # class 5 ref_rem (verified write path)
+- alpha2.write_test: pump
 - alpha2.write_test:
     id: pump
-    target: autonight                  # UNVERIFIED class 10 SET of AutoNight 90/8,
-                                       # needs experimental_class10_write: true
+    target: start
 ```
+
+When the pump is controlled from its panel, `ref_rem` reads 255 and the default test stops without writing. Use `target: start` instead.
 
 `alpha2go.yaml` has a "Pump Write Test" button for this. Start with `ref_rem`. Run `autonight` only to check the class 10 SET layout, ideally while capturing an HCI snoop log.
 
 How writes are handled:
 
 - Every frame gets its CRC computed and is checked again before it is sent. If the built-in self test of the frame builder fails at boot, all requests are disabled.
-- Writes are queued and sent one at a time, only when no other reply is outstanding, so the next reply is the write's ACK.
-- The log shows the request bytes and the ACK (`OK`, `unknown class`, `unknown id`, `illegal operation`), or a warning if no ACK arrives within 2 s.
+- All requests, polls included, are queued and sent one at a time from `loop()`. The next one goes out only after the previous reply arrived or timed out (1 s), so a reply always belongs to the request before it. The pump drops requests that arrive while it is still answering.
+- The log shows the request bytes and the ACK (`OK`, `unknown class`, `unknown id`, `illegal operation`), or a warning if no ACK arrives within 1 s.
 - After an ACK of `OK` the pump is polled again so the sensors show the new state.
 
 ## Verified vs experimental
@@ -83,13 +92,13 @@ How writes are handled:
 | --- | --- |
 | Frame format, CRC-16/CCITT | Verified: the frame builder reproduces the known request frames byte for byte (self test at boot) |
 | Class 10 GET 93/290, 87/69 | Verified on hardware (the existing requests) |
-| Class 10 GET 86/8 | Request format verified; offsets taken from the Grundfos profiles |
+| Class 10 GET 86/8 | Verified on an ALPHA2 GO (control mode 14 is not in the known list and shows as `Unknown (14)`) |
 | Offsets in 93/290 and 87/69 | From the Grundfos profiles |
 | Temperature units | **Unverified**: values above 200 are treated as Kelvin and converted to °C |
-| Reply CRC check | **Unverified on hardware**: replies with a bad CRC are dropped and logged as `CRC mismatch` |
+| Reply CRC check | Verified on an ALPHA2 GO: replies use the same CRC |
 | Class 3 commands | Verified in the Grundfos GO app and the Ontrol driver |
 | Class 5 `ref_rem` | Verified in the Grundfos GO app and the Ontrol driver |
-| Classic GET (used by `alpha2.write_test`) | Standard GENI, not yet tested on this pump |
+| Classic GET (used by `alpha2.write_test`) | Verified on an ALPHA2 GO (class 5 `ref_rem` read) |
 | Class 10 SET (`alpha2.write_object`) | **Experimental**: layout guessed from the GET reply, still needs confirmation with an HCI snoop log. Off by default |
 | ALPHA3 | Not tested with this component |
 
