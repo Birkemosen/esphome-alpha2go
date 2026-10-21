@@ -11,10 +11,14 @@ from esphome.const import (
     CONF_VOLTAGE,
     DEVICE_CLASS_CURRENT,
     DEVICE_CLASS_POWER,
+    DEVICE_CLASS_TEMPERATURE,
     DEVICE_CLASS_VOLTAGE,
+    ENTITY_CATEGORY_DIAGNOSTIC,
     STATE_CLASS_MEASUREMENT,
     UNIT_AMPERE,
+    UNIT_CELSIUS,
     UNIT_CUBIC_METER_PER_HOUR,
+    UNIT_KELVIN,
     UNIT_METER,
     UNIT_REVOLUTIONS_PER_MINUTE,
     UNIT_VOLT,
@@ -22,46 +26,81 @@ from esphome.const import (
 )
 from esphome.types import ConfigType
 
-alpha2_ns = cg.esphome_ns.namespace("alpha2")
-Alpha2 = alpha2_ns.class_("Alpha2", ble_client.BLEClientNode, cg.PollingComponent)
+from . import Alpha2
+
+CONF_MEDIA_TEMPERATURE = "media_temperature"
+CONF_DIFFERENTIAL_TEMPERATURE = "differential_temperature"
+CONF_FLOW_COEFFICIENT_KV = "flow_coefficient_kv"
+CONF_CONVERTER_TEMPERATURE = "converter_temperature"
+CONF_INVERTER_TEMPERATURE = "inverter_temperature"
+CONF_GRID_VOLTAGE = "grid_voltage"
+CONF_DC_LINK_VOLTAGE = "dc_link_voltage"
+CONF_ABSOLUTE_SPEED = "absolute_speed"
+CONF_SETPOINT = "setpoint"
+
+
+def _measurement(**kwargs):
+    return sensor.sensor_schema(
+        accuracy_decimals=kwargs.pop("accuracy_decimals", 2),
+        state_class=STATE_CLASS_MEASUREMENT,
+        **kwargs,
+    )
+
+
+def _temperature(**kwargs):
+    return _measurement(
+        unit_of_measurement=UNIT_CELSIUS,
+        accuracy_decimals=1,
+        device_class=DEVICE_CLASS_TEMPERATURE,
+        **kwargs,
+    )
+
+
+def _voltage(**kwargs):
+    return _measurement(
+        unit_of_measurement=UNIT_VOLT, device_class=DEVICE_CLASS_VOLTAGE, **kwargs
+    )
+
+
+# config key -> schema. The C++ setter is set_<key>_sensor().
+SENSORS = {
+    # PumpedMediaRelatedProcessValuesExtended (93/290)
+    CONF_FLOW: _measurement(unit_of_measurement=UNIT_CUBIC_METER_PER_HOUR),
+    CONF_HEAD: _measurement(unit_of_measurement=UNIT_METER),
+    CONF_MEDIA_TEMPERATURE: _temperature(),
+    CONF_DIFFERENTIAL_TEMPERATURE: _measurement(
+        unit_of_measurement=UNIT_KELVIN, accuracy_decimals=1
+    ),
+    # TODO: unit of the Kv value is not confirmed, so none is set by default.
+    CONF_FLOW_COEFFICIENT_KV: _measurement(),
+    # ProtectedMotorStateDetails (87/69)
+    CONF_POWER: _measurement(
+        unit_of_measurement=UNIT_WATT, device_class=DEVICE_CLASS_POWER
+    ),
+    CONF_CURRENT: _measurement(
+        unit_of_measurement=UNIT_AMPERE, device_class=DEVICE_CLASS_CURRENT
+    ),
+    CONF_SPEED: _measurement(unit_of_measurement=UNIT_REVOLUTIONS_PER_MINUTE),
+    CONF_ABSOLUTE_SPEED: _measurement(unit_of_measurement=UNIT_REVOLUTIONS_PER_MINUTE),
+    CONF_VOLTAGE: _voltage(),
+    CONF_GRID_VOLTAGE: _voltage(),
+    CONF_DC_LINK_VOLTAGE: _voltage(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
+    CONF_CONVERTER_TEMPERATURE: _temperature(
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC
+    ),
+    CONF_INVERTER_TEMPERATURE: _temperature(
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC
+    ),
+    # overall_operation_realized_request (86/8)
+    # TODO: the set point unit depends on the control mode, so none is set by default.
+    CONF_SETPOINT: _measurement(),
+}
 
 CONFIG_SCHEMA = (
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(Alpha2),
-            cv.Optional(CONF_FLOW): sensor.sensor_schema(
-                unit_of_measurement=UNIT_CUBIC_METER_PER_HOUR,
-                accuracy_decimals=2,
-                state_class=STATE_CLASS_MEASUREMENT,
-            ),
-            cv.Optional(CONF_HEAD): sensor.sensor_schema(
-                unit_of_measurement=UNIT_METER,
-                accuracy_decimals=2,
-                state_class=STATE_CLASS_MEASUREMENT,
-            ),
-            cv.Optional(CONF_POWER): sensor.sensor_schema(
-                unit_of_measurement=UNIT_WATT,
-                accuracy_decimals=2,
-                device_class=DEVICE_CLASS_POWER,
-                state_class=STATE_CLASS_MEASUREMENT,
-            ),
-            cv.Optional(CONF_CURRENT): sensor.sensor_schema(
-                unit_of_measurement=UNIT_AMPERE,
-                accuracy_decimals=2,
-                device_class=DEVICE_CLASS_CURRENT,
-                state_class=STATE_CLASS_MEASUREMENT,
-            ),
-            cv.Optional(CONF_SPEED): sensor.sensor_schema(
-                unit_of_measurement=UNIT_REVOLUTIONS_PER_MINUTE,
-                accuracy_decimals=2,
-                state_class=STATE_CLASS_MEASUREMENT,
-            ),
-            cv.Optional(CONF_VOLTAGE): sensor.sensor_schema(
-                unit_of_measurement=UNIT_VOLT,
-                accuracy_decimals=2,
-                device_class=DEVICE_CLASS_VOLTAGE,
-                state_class=STATE_CLASS_MEASUREMENT,
-            ),
+            **{cv.Optional(key): schema for key, schema in SENSORS.items()},
         }
     )
     .extend(ble_client.BLE_CLIENT_SCHEMA)
@@ -74,26 +113,7 @@ async def to_code(config: ConfigType) -> None:
     await cg.register_component(var, config)
     await ble_client.register_ble_node(var, config)
 
-    if flow_config := config.get(CONF_FLOW):
-        sens = await sensor.new_sensor(flow_config)
-        cg.add(var.set_flow_sensor(sens))
-
-    if head_config := config.get(CONF_HEAD):
-        sens = await sensor.new_sensor(head_config)
-        cg.add(var.set_head_sensor(sens))
-
-    if power_config := config.get(CONF_POWER):
-        sens = await sensor.new_sensor(power_config)
-        cg.add(var.set_power_sensor(sens))
-
-    if current_config := config.get(CONF_CURRENT):
-        sens = await sensor.new_sensor(current_config)
-        cg.add(var.set_current_sensor(sens))
-
-    if speed_config := config.get(CONF_SPEED):
-        sens = await sensor.new_sensor(speed_config)
-        cg.add(var.set_speed_sensor(sens))
-
-    if voltage_config := config.get(CONF_VOLTAGE):
-        sens = await sensor.new_sensor(voltage_config)
-        cg.add(var.set_voltage_sensor(sens))
+    for key in SENSORS:
+        if sensor_config := config.get(key):
+            sens = await sensor.new_sensor(sensor_config)
+            cg.add(getattr(var, f"set_{key}_sensor")(sens))
