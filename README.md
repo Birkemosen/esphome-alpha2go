@@ -41,6 +41,14 @@ The four `*_setpoint` sensors read `local_set_point` from the ControlModeUserCon
 
 When the pump was briefly set from the Grundfos GO app (advanced mode, LED 4), 86/8 reported constant pressure with 58823.53 Pa (exactly 6.0 m, not one of the panel settings) and once constant speed with set point 5225. The unit in constant speed is not known yet, so `setpoint_head` is empty in that mode.
 
+From the [ALPHA2 GO data booklet](https://api.grundfos.com/literature/Grundfosliterature-6910831.pdf):
+
+- Advanced mode means the control mode was set via Grundfos GO; LED 4 is then lit and the panel's mode and setting LEDs are off. Constant flow, external PWM control and advanced mode can only be chosen in Grundfos GO.
+- With the constant pressure and proportional pressure LEDs both off, the pump runs constant curve, which is control mode 2 (Constant speed) in 86/8.
+- Grundfos GO sets constant and proportional pressure in steps of 0.1 m, constant curve in steps of 1 % of maximum speed and constant flow in steps of 0.1 m³/h. The 5225 seen in constant curve is not a percentage, so its unit is still open.
+- In proportional pressure the head against a closed valve is half the set point Hset, never below 1 m. That is why the realized set point in 86/8 moves with the flow; Hset itself should be the stored set point in 86/18.
+- AUTOADAPT exists only for constant and proportional pressure, which matches control modes 14 and 13.
+
 `flow` and `head` now use the m³/h and m values the pump reports directly. Earlier versions converted the SI values with approximate factors, so `head` may read about 2 % higher than before.
 
 ## Actions
