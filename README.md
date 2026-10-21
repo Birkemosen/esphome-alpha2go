@@ -24,8 +24,8 @@ All sensors are optional. Only the objects needed by the configured sensors are 
 | `inverter_temperature` | °C | 87/69 offset 28 |
 | `setpoint` | – (Pa in pressure modes, see below) | 86/8 offset 3 |
 | `setpoint_head` | m | 86/8 offset 3 ÷ 9804, only in pressure control modes |
-| `const_pressure_setpoint` | m (unverified) | 86/16 offset 2 ÷ 9804 |
-| `prop_pressure_setpoint` | m (unverified) | 86/18 offset 2 ÷ 9804 |
+| `const_pressure_setpoint` | m | 86/16 offset 2 ÷ 9804 |
+| `prop_pressure_setpoint` | m | 86/18 offset 2 ÷ 9804 |
 | `autoadapt_radiator_setpoint` | m (unverified) | 86/20 offset 2 ÷ 9804 |
 | `autoadapt_underfloor_setpoint` | m (unverified) | 86/22 offset 2 ÷ 9804 |
 
@@ -37,15 +37,27 @@ Text sensors (`text_sensor` platform `alpha2`, with `alpha2_id` pointing at the 
 
 The realized `setpoint` is in Pa in the pressure control modes. On an ALPHA2 GO, constant pressure settings I/II/III gave exactly 24510, 49020 and 73530 Pa, i.e. 2.5, 5.0 and 7.5 m at the pump's 9804 Pa/m. `setpoint_head` shows it in m, so in constant pressure the panel setting can be read from it. 86/8 has no field for the setting itself, and in proportional pressure the realized set point moves with the flow. Temperatures read `nan` on the ALPHA2 GO, which apparently does not measure them.
 
-The four `*_setpoint` sensors read `local_set_point` from the ControlModeUserConfiguration object (type 302) for each control mode, i.e. the stored setting rather than what the pump runs right now. That should show the proportional pressure setting, which 86/8 does not. The value is assumed to be Pa like in 86/8; the raw value, `feedback_id` and PID values are logged at debug level so this can be checked. 86/20 and 86/22 may not exist on every pump; the pump then answers with an error that is logged as a warning.
+The four `*_setpoint` sensors read `local_set_point` from the ControlModeUserConfiguration object (type 302) for each control mode, i.e. the stored setting rather than what the pump runs right now. The value is in Pa like in 86/8 (verified for 86/16 and 86/18); the raw value, `feedback_id` and PID values are logged at debug level. 86/20 and 86/22 have not been read on hardware yet and may not exist on every pump; the pump then answers with an error that is logged as a warning.
 
-When the pump was briefly set from the Grundfos GO app (advanced mode, LED 4), 86/8 reported constant pressure with 58823.53 Pa (exactly 6.0 m, not one of the panel settings) and once constant speed with set point 5225. The unit in constant speed is not known yet, so `setpoint_head` is empty in that mode.
+Panel settings seen on an ALPHA2 GO (the values may differ between pump sizes):
+
+| Panel setting | 86/8 control mode | Where the setting shows | Value |
+| --- | --- | --- | --- |
+| Constant pressure I / II / III | 0 | `setpoint_head` and `const_pressure_setpoint` | 2.5 / 5.0 / 7.5 m |
+| Proportional pressure I / II / III | 1 | `prop_pressure_setpoint` | 4.0 / 6.0 / 8.0 m |
+| Constant curve I / II / III | 2 | `setpoint` | 5225 / 5877 / 6350 |
+| Constant pressure AUTOADAPT | 14 | – | the pump picks the set point |
+| Proportional pressure AUTOADAPT | 13 | – | the pump picks the set point |
+
+The stored set points keep the last manual setting while AUTOADAPT or another mode is active. In proportional pressure, 86/8 reports the set point on the curve for the current flow, not Hset. In constant curve III the set point (6350) matched the measured speed (6356 RPM), so it is probably RPM; I and II were read while the speed was still changing, so this is not confirmed.
+
+In advanced mode (set from Grundfos GO, LED 4) the pump reported constant pressure 6.0 m, the value last set in the app, with control source still `Panel`. 86/8 has no flag for advanced mode; it only shows as a set point that is not one of the panel settings.
 
 From the [ALPHA2 GO data booklet](https://api.grundfos.com/literature/Grundfosliterature-6910831.pdf):
 
 - Advanced mode means the control mode was set via Grundfos GO; LED 4 is then lit and the panel's mode and setting LEDs are off. Constant flow, external PWM control and advanced mode can only be chosen in Grundfos GO.
 - With the constant pressure and proportional pressure LEDs both off, the pump runs constant curve, which is control mode 2 (Constant speed) in 86/8.
-- Grundfos GO sets constant and proportional pressure in steps of 0.1 m, constant curve in steps of 1 % of maximum speed and constant flow in steps of 0.1 m³/h. The 5225 seen in constant curve is not a percentage, so its unit is still open.
+- Grundfos GO sets constant and proportional pressure in steps of 0.1 m, constant curve in steps of 1 % of maximum speed and constant flow in steps of 0.1 m³/h. The constant curve set point in 86/8 is not that percentage.
 - In proportional pressure the head against a closed valve is half the set point Hset, never below 1 m. That is why the realized set point in 86/8 moves with the flow; Hset itself should be the stored set point in 86/18.
 - AUTOADAPT exists only for constant and proportional pressure, which matches control modes 14 and 13.
 
@@ -110,7 +122,8 @@ How writes are handled:
 | Frame format, CRC-16/CCITT | Verified: the frame builder reproduces the known request frames byte for byte (self test at boot) |
 | Class 10 GET 93/290, 87/69 | Verified on hardware (the existing requests) |
 | Class 10 GET 86/8 | Verified on an ALPHA2 GO. Control modes 0, 1, 2, 13 and 14 seen while switching on the panel; 13 = Proportional pressure AUTOADAPT, 14 = Constant pressure AUTOADAPT. Set point in Pa confirmed for constant pressure I/II/III |
-| Class 10 GET 86/16, 86/18, 86/20, 86/22 | **Unverified**: layout and ids from the Grundfos profiles, not read on hardware yet |
+| Class 10 GET 86/16, 86/18 | Verified on an ALPHA2 GO: `local_set_point` in Pa follows the panel setting |
+| Class 10 GET 86/20, 86/22 | **Unverified**: ids from the Grundfos profiles, not read on hardware yet |
 | Offsets in 93/290 and 87/69 | From the Grundfos profiles |
 | Temperature units | **Unverified**: values above 200 are treated as Kelvin and converted to °C |
 | Reply CRC check | Verified on an ALPHA2 GO: replies use the same CRC |

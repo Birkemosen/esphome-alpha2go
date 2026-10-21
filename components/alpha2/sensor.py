@@ -103,7 +103,7 @@ SENSORS = {
     # Same set point in m; only published in the pressure control modes.
     CONF_SETPOINT_HEAD: _measurement(unit_of_measurement=UNIT_METER),
     # ControlModeUserConfiguration local_set_point (86/16, 86/18, 86/20, 86/22).
-    # UNVERIFIED: converted from Pa like the realized set point.
+    # Pa converted to m; verified for 86/16 and 86/18, UNVERIFIED for 86/20 and 86/22.
     CONF_CONST_PRESSURE_SETPOINT: _measurement(
         unit_of_measurement=UNIT_METER, entity_category=ENTITY_CATEGORY_DIAGNOSTIC
     ),

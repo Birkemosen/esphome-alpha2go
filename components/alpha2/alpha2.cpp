@@ -497,7 +497,8 @@ void Alpha2::handle_control_mode_config_(uint16_t sub, const uint8_t *obj, size_
     ESP_LOGD(TAG, "[%s]   local_set_point %.2f", this->parent_->address_str(), set_point);
   }
   auto *sensor = this->config_sensor_(sub);
-  // UNVERIFIED: assumed to be Pa like the realized set point in 86/8; the raw value is logged above.
+  // Pa, verified for 86/16 and 86/18 on an ALPHA2 GO (constant pressure I/II/III = 2.5/5.0/7.5 m,
+  // proportional pressure I/II/III = 4.0/6.0/8.0 m). UNVERIFIED for 86/20 and 86/22.
   if (sensor != nullptr)
     sensor->publish_state(set_point / PUMP_PA_PER_METER);
 }
