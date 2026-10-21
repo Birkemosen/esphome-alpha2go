@@ -26,7 +26,7 @@ All sensors are optional. Only the objects needed by the configured sensors are 
 
 Text sensors (`text_sensor` platform `alpha2`, with `alpha2_id` pointing at the sensor platform `id`), read from 86/8, which is what the pump actually runs:
 
-- `control_mode` – Constant pressure, Proportional pressure, Constant speed, AUTOadapt, AUTOadapt underfloor, Constant temperature, Constant flow, FlowAdapt
+- `control_mode` – Constant pressure, Proportional pressure, Constant speed, AUTOadapt, Constant pressure AUTOADAPT, Constant temperature, Constant flow, FlowAdapt
 - `operation_mode` – Auto, Stop, Min, Max, User defined
 - `control_source` – Panel, Bus
 
@@ -43,7 +43,7 @@ The sensor platform needs an `id` for these (`id: pump` in `alpha2go.yaml`).
 | `alpha2.start`, `alpha2.stop` | class 3 command START (6) / STOP (5) |
 | `alpha2.set_min`, `alpha2.set_max` | class 3 command MIN (25) / MAX (26) |
 | `alpha2.remote`, `alpha2.local` | class 3 command REMOTE (7) / LOCAL (8) |
-| `alpha2.set_control_mode` | class 3 command; `mode`: `const_pressure`, `prop_pressure`, `autoadapt`, `const_temp`, `const_flow`, `flow_adapt`. There is no known command for AUTOadapt underfloor, so switching away from it can only be undone on the panel or in the Grundfos GO app |
+| `alpha2.set_control_mode` | class 3 command; `mode`: `const_pressure`, `prop_pressure`, `autoadapt`, `const_temp`, `const_flow`, `flow_adapt`. There is no confirmed command back to Constant pressure AUTOADAPT (14), so switching away from it may only be undone on the panel or in the Grundfos GO app. On the ALPHA2 GO, LED 4 on the panel lights up when the pump has been set via Grundfos GO; the panel's control mode LEDs are then off |
 | `alpha2.set_setpoint_rem` | class 5 `ref_rem` (id 1); `value` 0–100 % of the active set point range, sent as 0–254 |
 | `alpha2.write_object` | **experimental** class 10 SET; needs `experimental_class10_write: true` |
 
@@ -92,7 +92,7 @@ How writes are handled:
 | --- | --- |
 | Frame format, CRC-16/CCITT | Verified: the frame builder reproduces the known request frames byte for byte (self test at boot) |
 | Class 10 GET 93/290, 87/69 | Verified on hardware (the existing requests) |
-| Class 10 GET 86/8 | Verified on an ALPHA2 GO. Control mode 14 = AUTOadapt underfloor (seen with the panel set to underfloor + AUTOadapt) |
+| Class 10 GET 86/8 | Verified on an ALPHA2 GO. Control mode 14 = Constant pressure AUTOADAPT (seen with the panel set to constant pressure + AUTOADAPT) |
 | Offsets in 93/290 and 87/69 | From the Grundfos profiles |
 | Temperature units | **Unverified**: values above 200 are treated as Kelvin and converted to °C |
 | Reply CRC check | Verified on an ALPHA2 GO: replies use the same CRC |

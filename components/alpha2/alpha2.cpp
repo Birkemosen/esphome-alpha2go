@@ -80,9 +80,9 @@ static std::string control_mode_to_string_(uint8_t value) {
     case 9:
       return "FlowAdapt";
     case 14:
-      // Observed on an ALPHA2 GO with the panel set to underfloor heating + AUTOadapt.
-      // TODO: the radiator variant probably has its own value, not observed yet.
-      return "AUTOadapt underfloor";
+      // Observed on an ALPHA2 GO with the panel set to constant pressure (coil icon) + AUTOADAPT.
+      // TODO: proportional pressure + AUTOADAPT (the factory setting) probably has its own value.
+      return "Constant pressure AUTOADAPT";
     default:
       return "Unknown (" + to_string(value) + ")";
   }
