@@ -142,7 +142,7 @@ How writes are handled:
 | Offsets in 93/290 and 87/69 | From the Grundfos profiles |
 | Temperature units | **Unverified**: values above 200 are treated as Kelvin and converted to °C |
 | Reply CRC check | Verified on an ALPHA2 GO: replies use the same CRC |
-| Class 3 commands | Verified in the Grundfos GO app and the Ontrol driver. START answered with ACK OK on an ALPHA2 GO in panel mode (`write_test target: start` PASSED). Commands that change the state are not tested on hardware yet |
+| Class 3 commands | Verified in the Grundfos GO app and the Ontrol driver. START answered with ACK OK on an ALPHA2 GO in panel mode (`write_test target: start` PASSED). AUTOADAPT (52) is rejected by an ALPHA2 GO with ACK 2 (unknown id) and changes nothing. Other commands that change the state are not tested on hardware yet |
 | Class 5 `ref_rem` | Verified in the Grundfos GO app and the Ontrol driver |
 | Classic GET (used by `alpha2.write_test`) | Verified on an ALPHA2 GO (class 5 `ref_rem` read) |
 | Class 10 SET (`alpha2.write_object`) | **Experimental**: layout guessed from the GET reply, still needs confirmation with an HCI snoop log. Off by default |
