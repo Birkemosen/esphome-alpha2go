@@ -167,6 +167,22 @@ select:
           mode: !lambda 'return x;'
 
 button:
+  # Safe test of the write path: reads ref_rem, writes the same value back and reads it
+  # again. The pump's state does not change. Look for "write test ... PASSED" in the log.
+  - platform: template
+    name: "Pump Write Test"
+    icon: mdi:test-tube
+    entity_category: diagnostic
+    on_press:
+      - alpha2.write_test: pump
+  # Same test for the UNVERIFIED class 10 SET path (AutoNight 90/8, written back unchanged).
+  # Needs experimental_class10_write: true on the sensor platform.
+  # - platform: template
+  #   name: "Pump Write Test Class 10"
+  #   on_press:
+  #     - alpha2.write_test:
+  #         id: pump
+  #         target: autonight
   - platform: template
     name: "Pump Start"
     on_press:

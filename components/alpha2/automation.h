@@ -60,6 +60,16 @@ template<typename... Ts> class WriteObjectAction final : public Action<Ts...>, p
   std::vector<uint8_t> data_;
 };
 
+// alpha2.write_test: read a value, write the same value back, read again
+template<typename... Ts> class WriteTestAction final : public Action<Ts...>, public Parented<Alpha2> {
+ public:
+  void set_target(WriteTestTarget target) { this->target_ = target; }
+  void play(const Ts &...x) override { this->parent_->write_test(this->target_); }
+
+ protected:
+  WriteTestTarget target_{WRITE_TEST_REF_REM};
+};
+
 }  // namespace esphome::alpha2
 
 #endif

@@ -54,6 +54,27 @@ std::vector<uint8_t> classic_set(uint8_t cls, uint8_t id, uint8_t value) {
   return {cls, static_cast<uint8_t>((OS_SET << 6) | 2), id, value};
 }
 
+std::vector<uint8_t> classic_get(uint8_t cls, uint8_t id) {
+  return {cls, static_cast<uint8_t>((OS_GET << 6) | 1), id};
+}
+
+bool parse_class10_object(const uint8_t *data, size_t len, Class10Object *out) {
+  if (len < CLASS10_OBJECT_HEADER)
+    return false;
+  out->status = data[0];
+  out->type = read_u16_be(data + 1);
+  out->version = data[3];
+  out->size = 0;
+  out->data = nullptr;
+  if (out->status != 0)
+    return true;
+  out->size = read_u24_be(data + 4);
+  if (CLASS10_OBJECT_HEADER + out->size > len)
+    return false;
+  out->data = data + CLASS10_OBJECT_HEADER;
+  return true;
+}
+
 std::vector<uint8_t> class10_set(uint8_t id, uint16_t sub, uint16_t type, uint8_t version,
                                  const std::vector<uint8_t> &data) {
   // UNVERIFIED: assumed to mirror the GET reply object header (type, version, 24 bit size).

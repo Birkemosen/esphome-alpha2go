@@ -69,6 +69,15 @@ static const uint8_t REF_REM = 1;  // 0..254 = 0..100 % of active setpoint range
 // Class 10 reply object header: status(1) type(2) version(1) size(3)
 static const size_t CLASS10_OBJECT_HEADER = 7;
 
+// One object from a class 10 GET reply. data points into the reply buffer.
+struct Class10Object {
+  uint8_t status;
+  uint16_t type;
+  uint8_t version;
+  uint32_t size;
+  const uint8_t *data;
+};
+
 uint16_t crc16_ccitt(const uint8_t *buf, size_t len);
 
 // Builds a complete frame; LEN and CRC are filled in. Returns an empty vector if the
@@ -82,10 +91,17 @@ bool verify_frame(const uint8_t *frame, size_t len);
 std::vector<uint8_t> class10_get(uint8_t id, uint16_t sub);
 std::vector<uint8_t> classic_command(uint8_t cmd);
 std::vector<uint8_t> classic_set(uint8_t cls, uint8_t id, uint8_t value);
+// Standard GENI GET of one classic id; the reply data is the 8 bit value.
+std::vector<uint8_t> classic_get(uint8_t cls, uint8_t id);
 // UNVERIFIED: layout mirrors the class 10 GET reply, not confirmed with an HCI snoop log.
 // Returns an empty vector if the data does not fit in one APDU.
 std::vector<uint8_t> class10_set(uint8_t id, uint16_t sub, uint16_t type, uint8_t version,
                                  const std::vector<uint8_t> &data);
+
+// Reads the object header at data. Returns false if the header is incomplete, or if the
+// status is OK and the object data is cut off. A non-zero status returns true with size
+// and data unset; the caller must stop parsing there.
+bool parse_class10_object(const uint8_t *data, size_t len, Class10Object *out);
 
 float read_float_be(const uint8_t *p);
 uint16_t read_u16_be(const uint8_t *p);

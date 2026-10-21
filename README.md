@@ -56,6 +56,20 @@ The sensor platform needs an `id` for these (`id: pump` in `alpha2go.yaml`).
 
 `alpha2.set_setpoint_rem` is the recommended way to change the set point. The pump may only follow the remote set point after `alpha2.remote`.
 
+### Safe write test
+
+`alpha2.write_test` tests the write path without changing anything on the pump. It reads the current value, writes the **same** value back and reads it again, and logs `write test ... PASSED` or `FAILED` with the reason. If the first read fails, nothing is written. If the value has changed after the write, the original value is written back.
+
+```yaml
+- alpha2.write_test: pump              # class 5 ref_rem (verified write path)
+- alpha2.write_test:
+    id: pump
+    target: autonight                  # UNVERIFIED class 10 SET of AutoNight 90/8,
+                                       # needs experimental_class10_write: true
+```
+
+`alpha2go.yaml` has a "Pump Write Test" button for this. Start with `ref_rem`. Run `autonight` only to check the class 10 SET layout, ideally while capturing an HCI snoop log.
+
 How writes are handled:
 
 - Every frame gets its CRC computed and is checked again before it is sent. If the built-in self test of the frame builder fails at boot, all requests are disabled.
@@ -75,6 +89,7 @@ How writes are handled:
 | Reply CRC check | **Unverified on hardware**: replies with a bad CRC are dropped and logged as `CRC mismatch` |
 | Class 3 commands | Verified in the Grundfos GO app and the Ontrol driver |
 | Class 5 `ref_rem` | Verified in the Grundfos GO app and the Ontrol driver |
+| Classic GET (used by `alpha2.write_test`) | Standard GENI, not yet tested on this pump |
 | Class 10 SET (`alpha2.write_object`) | **Experimental**: layout guessed from the GET reply, still needs confirmation with an HCI snoop log. Off by default |
 | ALPHA3 | Not tested with this component |
 

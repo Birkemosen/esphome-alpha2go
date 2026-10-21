@@ -2,7 +2,15 @@ from esphome import automation
 import esphome.codegen as cg
 from esphome.components import ble_client
 import esphome.config_validation as cv
-from esphome.const import CONF_DATA, CONF_ID, CONF_MODE, CONF_TYPE, CONF_VALUE, CONF_VERSION
+from esphome.const import (
+    CONF_DATA,
+    CONF_ID,
+    CONF_MODE,
+    CONF_TARGET,
+    CONF_TYPE,
+    CONF_VALUE,
+    CONF_VERSION,
+)
 
 CODEOWNERS = ["@parameter-pollution"]
 
@@ -23,6 +31,16 @@ SetSetpointRemAction = alpha2_ns.class_(
 WriteObjectAction = alpha2_ns.class_(
     "WriteObjectAction", automation.Action, cg.Parented.template(Alpha2)
 )
+WriteTestAction = alpha2_ns.class_(
+    "WriteTestAction", automation.Action, cg.Parented.template(Alpha2)
+)
+WriteTestTarget = alpha2_ns.enum("WriteTestTarget")
+WRITE_TEST_TARGETS = {
+    # class 5 ref_rem: the verified write path
+    "ref_rem": WriteTestTarget.WRITE_TEST_REF_REM,
+    # UNVERIFIED class 10 SET of AutoNight 90/8, needs experimental_class10_write: true
+    "autonight": WriteTestTarget.WRITE_TEST_AUTONIGHT,
+}
 
 # Classic GENI class 3 commands, verified in the Grundfos GO app and the Ontrol driver.
 COMMANDS = {
@@ -133,4 +151,25 @@ async def write_object_to_code(config, action_id, template_arg, args):
         )
     )
     cg.add(var.set_data(config[CONF_DATA]))
+    return var
+
+
+# Writes a value back unchanged to test the write path without changing the pump.
+@automation.register_action(
+    "alpha2.write_test",
+    WriteTestAction,
+    automation.maybe_simple_id(
+        {
+            cv.GenerateID(): cv.use_id(Alpha2),
+            cv.Optional(CONF_TARGET, default="ref_rem"): cv.enum(
+                WRITE_TEST_TARGETS, lower=True
+            ),
+        }
+    ),
+    synchronous=True,
+)
+async def write_test_to_code(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    await cg.register_parented(var, config[CONF_ID])
+    cg.add(var.set_target(config[CONF_TARGET]))
     return var
