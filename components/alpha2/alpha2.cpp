@@ -120,6 +120,7 @@ void Alpha2::dump_config() {
   LOG_TEXT_SENSOR(" ", "Control source", this->control_source_text_sensor_);
 #endif
   ESP_LOGCONFIG(TAG, "  GENI self test: %s", this->geni_self_test_ok_ ? "passed" : "FAILED");
+  ESP_LOGCONFIG(TAG, "  Experimental class 10 write: %s", YESNO(this->experimental_class10_write_));
 }
 
 void Alpha2::setup() {
@@ -130,7 +131,21 @@ void Alpha2::setup() {
   }
 }
 
-void Alpha2::loop() { this->expire_pending_(); }
+void Alpha2::loop() {
+  this->expire_pending_();
+  if (this->write_queue_.empty())
+    return;
+  if (this->node_state != espbt::ClientState::ESTABLISHED) {
+    ESP_LOGW(TAG, "[%s] not connected, dropping %u queued write(s)", this->parent_->address_str(),
+             (unsigned) this->write_queue_.size());
+    this->write_queue_.clear();
+    return;
+  }
+  // One write at a time and only when nothing else is outstanding, so the next reply is its ACK.
+  if (!this->pending_.empty() || millis() - this->last_tx_ms_ < GENI_REQUEST_SPACING_MS)
+    return;
+  this->send_next_write_();
+}
 
 bool Alpha2::want_motor_state_() const {
   return this->power_sensor_ != nullptr || this->current_sensor_ != nullptr || this->speed_sensor_ != nullptr ||
@@ -157,6 +172,7 @@ void Alpha2::reset_link_state_() {
   this->response_offset_ = 0;
   this->response_length_ = 0;
   this->pending_.clear();
+  this->write_queue_.clear();
 }
 
 void Alpha2::publish_unavailable_() {
@@ -185,8 +201,13 @@ void Alpha2::expire_pending_() {
   const uint32_t now = millis();
   while (!this->pending_.empty() && now - this->pending_.front().sent_ms > GENI_REPLY_TIMEOUT_MS) {
     const auto &req = this->pending_.front();
-    ESP_LOGW(TAG, "[%s] no reply to class %u request within %" PRIu32 " ms", this->parent_->address_str(),
-             req.apdu_class, GENI_REPLY_TIMEOUT_MS);
+    if (req.is_write) {
+      ESP_LOGW(TAG, "[%s] write %s: no ACK within %" PRIu32 " ms, result unknown", this->parent_->address_str(),
+               req.label.c_str(), GENI_REPLY_TIMEOUT_MS);
+    } else {
+      ESP_LOGW(TAG, "[%s] no reply to class %u request within %" PRIu32 " ms", this->parent_->address_str(),
+               req.apdu_class, GENI_REPLY_TIMEOUT_MS);
+    }
     this->pending_.pop_front();
   }
 }
@@ -197,8 +218,12 @@ bool Alpha2::pop_pending_(uint8_t apdu_class, PendingRequest *out) {
       continue;
     // Replies come in send order, so anything before the match was lost.
     for (size_t j = 0; j < i; j++) {
-      ESP_LOGW(TAG, "[%s] reply to class %u request missing", this->parent_->address_str(),
-               this->pending_.front().apdu_class);
+      const auto &lost = this->pending_.front();
+      if (lost.is_write) {
+        ESP_LOGW(TAG, "[%s] write %s: ACK missing, result unknown", this->parent_->address_str(), lost.label.c_str());
+      } else {
+        ESP_LOGW(TAG, "[%s] reply to class %u request missing", this->parent_->address_str(), lost.apdu_class);
+      }
       this->pending_.pop_front();
     }
     *out = this->pending_.front();
@@ -272,6 +297,10 @@ void Alpha2::handle_apdu_(uint8_t apdu_class, uint8_t ack, const uint8_t *data, 
   const bool known = this->pop_pending_(apdu_class, &request);
   if (!known)
     ESP_LOGD(TAG, "[%s] unsolicited class %u reply", this->parent_->address_str(), apdu_class);
+  if (known && request.is_write) {
+    this->handle_write_ack_(request, ack);
+    return;
+  }
 
   if (ack != geni::ACK_OK) {
     ESP_LOGW(TAG, "[%s] class %u request rejected: %s", this->parent_->address_str(), apdu_class,
@@ -455,15 +484,117 @@ bool Alpha2::send_frame_(const std::vector<uint8_t> &frame, const PendingRequest
   }
   std::vector<uint8_t> copy = frame;  // esp_ble_gattc_write_char takes a non-const pointer
   this->send_request_(copy.data(), copy.size());
+  this->last_tx_ms_ = millis();
   PendingRequest entry = pending;
   entry.sent_ms = millis();
   this->pending_.push_back(entry);
   return true;
 }
 
+void Alpha2::handle_write_ack_(const PendingRequest &request, uint8_t ack) {
+  if (ack != geni::ACK_OK) {
+    ESP_LOGW(TAG, "[%s] write %s: ACK %u (%s)", this->parent_->address_str(), request.label.c_str(), ack,
+             geni::ack_to_string(ack));
+    return;
+  }
+  ESP_LOGI(TAG, "[%s] write %s: ACK OK", this->parent_->address_str(), request.label.c_str());
+  this->set_timeout("refresh", GENI_REFRESH_AFTER_WRITE_MS, [this]() { this->update(); });
+}
+
+bool Alpha2::queue_write_(const std::vector<uint8_t> &apdu, std::string label) {
+  if (!this->geni_self_test_ok_) {
+    ESP_LOGE(TAG, "[%s] write %s refused: GENI self test failed", this->parent_->address_str(), label.c_str());
+    return false;
+  }
+  if (this->node_state != espbt::ClientState::ESTABLISHED) {
+    ESP_LOGW(TAG, "[%s] write %s refused: not connected", this->parent_->address_str(), label.c_str());
+    return false;
+  }
+  if (this->write_queue_.size() >= GENI_WRITE_QUEUE_MAX) {
+    ESP_LOGW(TAG, "[%s] write %s refused: queue full", this->parent_->address_str(), label.c_str());
+    return false;
+  }
+  // SD_REQUEST so the pump always answers with an ACK.
+  auto frame = geni::build_frame(geni::SD_REQUEST, geni::ADDR_PUMP, geni::ADDR_MASTER, apdu);
+  if (apdu.empty() || frame.empty() || !geni::verify_frame(frame.data(), frame.size())) {
+    ESP_LOGE(TAG, "[%s] write %s refused: could not build a valid frame", this->parent_->address_str(),
+             label.c_str());
+    return false;
+  }
+  this->write_queue_.push_back(WriteRequest{std::move(frame), std::move(label)});
+  return true;
+}
+
+void Alpha2::send_next_write_() {
+  WriteRequest write = std::move(this->write_queue_.front());
+  this->write_queue_.pop_front();
+  HexBuffer buf;
+  ESP_LOGI(TAG, "[%s] write %s: %s", this->parent_->address_str(), write.label.c_str(),
+           hex_(buf, write.frame.data(), write.frame.size()));
+  PendingRequest pending{};
+  pending.apdu_class = write.frame[4];
+  pending.is_write = true;
+  pending.label = std::move(write.label);
+  this->send_frame_(write.frame, pending);
+}
+
+bool Alpha2::send_command(uint8_t command, const char *name) {
+  return this->queue_write_(geni::classic_command(command), std::string("command ") + name);
+}
+
+bool Alpha2::set_control_mode(const std::string &mode) {
+  static const struct {
+    const char *name;
+    uint8_t command;
+  } MODES[] = {
+      {"const_pressure", geni::CMD_CONST_PRESS}, {"prop_pressure", geni::CMD_PROP_PRESS},
+      {"autoadapt", geni::CMD_AUTOADAPT},        {"const_temp", geni::CMD_CONST_TEMP},
+      {"const_flow", geni::CMD_CONST_FLOW},      {"flow_adapt", geni::CMD_FLOW_ADAPT},
+  };
+  for (const auto &entry : MODES) {
+    if (mode == entry.name)
+      return this->send_command(entry.command, entry.name);
+  }
+  ESP_LOGE(TAG, "[%s] unknown control mode '%s'", this->parent_->address_str(), mode.c_str());
+  return false;
+}
+
+bool Alpha2::set_setpoint_rem(float percent) {
+  if (std::isnan(percent) || percent < 0.0F || percent > 100.0F) {
+    ESP_LOGE(TAG, "[%s] set point %.1f %% out of range 0..100", this->parent_->address_str(), percent);
+    return false;
+  }
+  // ref_rem: 0..254 maps to 0..100 % of the active set point range
+  const auto value = static_cast<uint8_t>(std::lround(percent * 254.0F / 100.0F));
+  char label[40];
+  snprintf(label, sizeof(label), "ref_rem %.1f %% (%u)", percent, value);
+  return this->queue_write_(geni::classic_set(geni::CLASS_REFERENCE, geni::REF_REM, value), label);
+}
+
+bool Alpha2::write_object(uint8_t id, uint16_t sub, uint16_t type, uint8_t version, const std::vector<uint8_t> &data) {
+  char label[48];
+  snprintf(label, sizeof(label), "object %u/%u type %u (EXPERIMENTAL)", id, sub, type);
+  if (!this->experimental_class10_write_) {
+    ESP_LOGE(TAG, "[%s] write %s refused: set experimental_class10_write: true to enable",
+             this->parent_->address_str(), label);
+    return false;
+  }
+  if (id == OBJ_OPERATION_ID && sub == OBJ_OPERATION_REALIZED_SUB) {
+    ESP_LOGE(TAG, "[%s] write %s refused: object is read only", this->parent_->address_str(), label);
+    return false;
+  }
+  // UNVERIFIED: payload layout and the ACK of a class 10 SET have not been confirmed with an HCI snoop log.
+  // TODO: capture a snoop log of the Grundfos GO app changing a setting and compare.
+  return this->queue_write_(geni::class10_set(id, sub, type, version, data), label);
+}
+
 void Alpha2::request_object_(uint8_t id, uint16_t sub) {
   auto frame = geni::build_frame(geni::SD_REQUEST, geni::ADDR_PUMP, geni::ADDR_MASTER, geni::class10_get(id, sub));
-  this->send_frame_(frame, PendingRequest{geni::CLASS_DATA_OBJECT, id, sub, 0});
+  PendingRequest pending{};
+  pending.apdu_class = geni::CLASS_DATA_OBJECT;
+  pending.object_id = id;
+  pending.sub_id = sub;
+  this->send_frame_(frame, pending);
   delay(25);  // need to wait between requests
 }
 

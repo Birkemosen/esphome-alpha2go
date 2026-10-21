@@ -37,6 +37,7 @@ CONF_GRID_VOLTAGE = "grid_voltage"
 CONF_DC_LINK_VOLTAGE = "dc_link_voltage"
 CONF_ABSOLUTE_SPEED = "absolute_speed"
 CONF_SETPOINT = "setpoint"
+CONF_EXPERIMENTAL_CLASS10_WRITE = "experimental_class10_write"
 
 
 def _measurement(**kwargs):
@@ -100,6 +101,8 @@ CONFIG_SCHEMA = (
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(Alpha2),
+            # UNVERIFIED class 10 SET used by alpha2.write_object. Keep disabled unless testing.
+            cv.Optional(CONF_EXPERIMENTAL_CLASS10_WRITE, default=False): cv.boolean,
             **{cv.Optional(key): schema for key, schema in SENSORS.items()},
         }
     )
@@ -112,6 +115,7 @@ async def to_code(config: ConfigType) -> None:
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await ble_client.register_ble_node(var, config)
+    cg.add(var.set_experimental_class10_write(config[CONF_EXPERIMENTAL_CLASS10_WRITE]))
 
     for key in SENSORS:
         if sensor_config := config.get(key):
