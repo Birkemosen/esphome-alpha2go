@@ -252,18 +252,22 @@ bool Alpha2::want_operation_request_() const {
 
 bool Alpha2::want_setting_() const {
 #ifdef USE_TEXT_SENSOR
-  return this->setting_text_sensor_ != nullptr;
+  return this->setting_text_sensor_ != nullptr || this->selected_setting_text_sensor_ != nullptr;
 #else
   return false;
 #endif
 }
 
 bool Alpha2::want_config_(uint16_t sub) const {
-  // The setting text sensor needs the stored proportional pressure set point (Hset).
+  // The setting text sensors need the stored proportional pressure set point (Hset).
   return this->config_sensor_(sub) != nullptr || (sub == OBJ_CONFIG_PROP_PRESSURE_SUB && this->want_setting_());
 }
 
 // Index of the level that matches value, or -1. Levels of 0 are not configured.
+// Grundfos GO sets pressures in steps of 0.1 m, so 0.05 m keeps app values apart from the levels.
+static const float PRESSURE_TOLERANCE_M = 0.05F;
+static const float SPEED_TOLERANCE = 0.01F;  // 1 %
+
 static int match_level_(const std::array<float, 3> &levels, float value, float tolerance_abs, float tolerance_rel) {
   if (std::isnan(value))
     return -1;
@@ -279,9 +283,6 @@ void Alpha2::publish_setting_() {
 #ifdef USE_TEXT_SENSOR
   if (this->setting_text_sensor_ == nullptr || this->last_control_mode_ == 0xFF)
     return;
-  // Grundfos GO sets pressures in steps of 0.1 m, so 0.05 m keeps app values apart from the levels.
-  static const float PRESSURE_TOLERANCE_M = 0.05F;
-  static const float SPEED_TOLERANCE = 0.01F;  // 1 %
   int level = -1;
   switch (this->last_control_mode_) {
     case 13:
@@ -667,10 +668,44 @@ void Alpha2::handle_control_mode_config_(uint16_t sub, const uint8_t *obj, size_
 void Alpha2::handle_predefined_setting_(const uint8_t *obj, size_t size) {
   if (size < 1)
     return;
-  ESP_LOGD(TAG, "[%s]   selected_setting %u", this->parent_->address_str(), obj[0]);
+  const uint8_t setting = obj[0];
+  ESP_LOGD(TAG, "[%s]   selected_setting %u (%s)", this->parent_->address_str(), setting,
+           user_setting_to_string_(setting).c_str());
 #ifdef USE_TEXT_SENSOR
-  if (this->selected_setting_text_sensor_ != nullptr)
-    this->selected_setting_text_sensor_->publish_state(user_setting_to_string_(obj[0]));
+  if (this->selected_setting_text_sensor_ == nullptr)
+    return;
+  // 86/350 keeps the last setting chosen on the panel. When the pump is run from Grundfos GO or by a
+  // class 3 command it is not updated, so it only counts if 86/8 still matches it.
+  bool matches;
+  const uint8_t mode = this->last_control_mode_;
+  if (setting < 9) {
+    static const uint8_t MODES[] = {2, 0, 1};  // CC, CP, PP
+    const int level = setting % 3;
+    if (mode != MODES[setting / 3]) {
+      matches = false;
+    } else if (mode == 2) {
+      matches = match_level_(this->const_speed_levels_, this->last_set_point_, 0.0F, SPEED_TOLERANCE) == level;
+    } else if (mode == 0) {
+      matches = match_level_(this->const_pressure_levels_, this->last_set_point_ / PUMP_PA_PER_METER,
+                             PRESSURE_TOLERANCE_M, 0.0F) == level;
+    } else {
+      matches = match_level_(this->prop_pressure_levels_, this->prop_pressure_hset_ / PUMP_PA_PER_METER,
+                             PRESSURE_TOLERANCE_M, 0.0F) == level;
+    }
+  } else if (setting == 10) {
+    matches = mode == 14;  // CP AUTOADAPT
+  } else if (setting == 11) {
+    matches = mode == 13;  // PP AUTOADAPT
+  } else {
+    matches = true;  // other settings: no known control mode to compare with
+  }
+  if (!matches && mode != 0xFF) {
+    ESP_LOGD(TAG, "[%s]   control mode %u does not match the selected setting, showing Advanced",
+             this->parent_->address_str(), mode);
+    this->selected_setting_text_sensor_->publish_state("Advanced");
+    return;
+  }
+  this->selected_setting_text_sensor_->publish_state(user_setting_to_string_(setting));
 #endif
 }
 

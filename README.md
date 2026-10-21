@@ -33,7 +33,7 @@ All sensors are optional. Only the objects needed by the configured sensors are 
 Text sensors (`text_sensor` platform `alpha2`, with `alpha2_id` pointing at the sensor platform `id`), read from 86/8, which is what the pump actually runs:
 
 - `control_mode` – names from the ControlMode enum in the GENI profiles, e.g. Constant pressure (0), Proportional pressure (1), Constant speed (2), Constant flow (8), Proportional pressure AUTOADAPT (13, AutoAdaptRadiator in the profiles), Constant pressure AUTOADAPT (14, AutoAdaptUnderfloor)
-- `selected_setting` – the setting the pump reports in `predefined_setpoint_setting_obj` (86/350), e.g. Proportional pressure II or Constant pressure AUTOADAPT. **Unverified** on hardware; it is not yet known what it shows in advanced mode
+- `selected_setting` – the setting the pump reports in `predefined_setpoint_setting_obj` (86/350), e.g. Proportional pressure II or Constant pressure AUTOADAPT. 86/350 keeps the last setting chosen on the panel and is not updated when the pump is run from Grundfos GO or by `alpha2.set_control_mode`, so the sensor shows Advanced when 86/8 (control mode, and set point for I/II/III) does not match it
 - `operation_mode` – Auto, Stop, Min, Max, User defined
 - `control_source` – Panel, Bus
 - `setting` – I, II, III, AUTOADAPT or Advanced, worked out from the set points (see the table below). In proportional pressure it uses 86/18, which is then polled even without `prop_pressure_setpoint`. A set point that matches no level, or a control mode the panel cannot select, shows as Advanced. After connecting, the levels are read once from the pump (`predefined_setpoint_config_obj`, 86/351–359, the same objects Grundfos GO shows). Until then, or if a value does not fit, the YAML levels are used. They default to the values read from one ALPHA2 GO:
@@ -140,9 +140,10 @@ How writes are handled:
 | Offsets in 93/290 and 87/69 | From the Grundfos profiles |
 | Temperature units | **Unverified**: values above 200 are treated as Kelvin and converted to °C |
 | Reply CRC check | Verified on an ALPHA2 GO: replies use the same CRC |
-| Class 3 commands | Verified in the Grundfos GO app and the Ontrol driver. START answered with ACK OK on an ALPHA2 GO in panel mode (`write_test target: start` PASSED). AUTOADAPT (52) is rejected by an ALPHA2 GO with ACK 2 (unknown id) and changes nothing. Other commands that change the state are not tested on hardware yet |
+| Class 3 commands | Verified in the Grundfos GO app and the Ontrol driver. START answered with ACK OK on an ALPHA2 GO in panel mode (`write_test target: start` PASSED). AUTOADAPT (52) is rejected by an ALPHA2 GO with ACK 2 (unknown id) and changes nothing. PROPORTIONAL_PRESSURE (23) answered ACK OK and the pump switched from constant to proportional pressure; the control source stayed Panel |
 | Class 5 `ref_rem` | Not in the ALPHA2 GO (52_6, 52_20, 52_21) or ALPHA3 (52_1_0) profiles; the ALPHA2 GO reads it as 255 |
-| Class 10 GET 86/350, 86/351–359 | **Unverified**: ids and layout from the ALPHA2 GO profiles, not read on hardware yet |
+| Class 10 GET 86/350 | Verified on an ALPHA2 GO (1 byte, 10 = CP AUTOADAPT after choosing it on the panel). Not updated by Grundfos GO or class 3 commands |
+| Class 10 GET 86/351–359 | **Unverified**: ids and layout from the ALPHA2 GO profiles |
 | Classic GET (used by `alpha2.write_test`) | Verified on an ALPHA2 GO (class 5 `ref_rem` read) |
 | Class 10 SET (`alpha2.write_object`) | **Experimental**: layout guessed from the GET reply, still needs confirmation with an HCI snoop log. Off by default |
 | ALPHA3 | Not tested with this component |

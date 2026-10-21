@@ -65,7 +65,13 @@ async def to_code(config: ConfigType) -> None:
         if sensor_config := config.get(key):
             sens = await text_sensor.new_text_sensor(sensor_config)
             cg.add(getattr(parent, f"set_{key}_text_sensor")(sens))
-    if setting := config.get(CONF_SETTING):
-        cg.add(parent.set_const_pressure_levels(*setting[CONF_CONST_PRESSURE_LEVELS]))
-        cg.add(parent.set_prop_pressure_levels(*setting[CONF_PROP_PRESSURE_LEVELS]))
-        cg.add(parent.set_const_speed_levels(*setting[CONF_CONST_SPEED_LEVELS]))
+    # Both setting sensors compare against the levels; the YAML ones live under setting.
+    if CONF_SETTING in config or CONF_SELECTED_SETTING in config:
+        setting = config.get(CONF_SETTING, {})
+        levels = (
+            (CONF_CONST_PRESSURE_LEVELS, DEFAULT_CONST_PRESSURE_LEVELS, "set_const_pressure_levels"),
+            (CONF_PROP_PRESSURE_LEVELS, DEFAULT_PROP_PRESSURE_LEVELS, "set_prop_pressure_levels"),
+            (CONF_CONST_SPEED_LEVELS, DEFAULT_CONST_SPEED_LEVELS, "set_const_speed_levels"),
+        )
+        for key, default, setter in levels:
+            cg.add(getattr(parent, setter)(*setting.get(key, default)))
