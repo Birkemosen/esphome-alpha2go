@@ -32,10 +32,11 @@ All sensors are optional. Only the objects needed by the configured sensors are 
 
 Text sensors (`text_sensor` platform `alpha2`, with `alpha2_id` pointing at the sensor platform `id`), read from 86/8, which is what the pump actually runs:
 
-- `control_mode` – Constant pressure, Proportional pressure, Constant speed, AUTOadapt, Proportional pressure AUTOADAPT (13), Constant pressure AUTOADAPT (14), Constant temperature, Constant flow, FlowAdapt
+- `control_mode` – names from the ControlMode enum in the GENI profiles, e.g. Constant pressure (0), Proportional pressure (1), Constant speed (2), Constant flow (8), Proportional pressure AUTOADAPT (13, AutoAdaptRadiator in the profiles), Constant pressure AUTOADAPT (14, AutoAdaptUnderfloor)
+- `selected_setting` – the setting the pump reports in `predefined_setpoint_setting_obj` (86/350), e.g. Proportional pressure II or Constant pressure AUTOADAPT. **Unverified** on hardware; it is not yet known what it shows in advanced mode
 - `operation_mode` – Auto, Stop, Min, Max, User defined
 - `control_source` – Panel, Bus
-- `setting` – I, II, III, AUTOADAPT or Advanced, worked out from the set points (see the table below). In proportional pressure it uses 86/18, which is then polled even without `prop_pressure_setpoint`. A set point that matches no level, or a control mode the panel cannot select, shows as Advanced. The levels default to the values read from one ALPHA2 GO and can be set per pump:
+- `setting` – I, II, III, AUTOADAPT or Advanced, worked out from the set points (see the table below). In proportional pressure it uses 86/18, which is then polled even without `prop_pressure_setpoint`. A set point that matches no level, or a control mode the panel cannot select, shows as Advanced. After connecting, the levels are read once from the pump (`predefined_setpoint_config_obj`, 86/351–359, the same objects Grundfos GO shows). Until then, or if a value does not fit, the YAML levels are used. They default to the values read from one ALPHA2 GO:
 
 ```yaml
 text_sensor:
@@ -84,23 +85,20 @@ The sensor platform needs an `id` for these (`id: pump` in `alpha2go.yaml`).
 
 | Action | What it sends |
 | --- | --- |
-| `alpha2.start`, `alpha2.stop` | class 3 command START (6) / STOP (5) |
+| `alpha2.start`, `alpha2.stop` | class 3 command START (6, "AUTO" in the profiles) / STOP (5) |
 | `alpha2.set_min`, `alpha2.set_max` | class 3 command MIN (25) / MAX (26) |
 | `alpha2.remote`, `alpha2.local` | class 3 command REMOTE (7) / LOCAL (8) |
-| `alpha2.set_control_mode` | class 3 command; `mode`: `const_pressure`, `prop_pressure`, `autoadapt`, `const_temp`, `const_flow`, `flow_adapt`. There is no confirmed command back to Constant pressure AUTOADAPT (14), so switching away from it may only be undone on the panel or in the Grundfos GO app. On the ALPHA2 GO, LED 4 on the panel lights up when the pump has been set via Grundfos GO; the panel's control mode LEDs are then off |
-| `alpha2.set_setpoint_rem` | class 5 `ref_rem` (id 1); `value` 0–100 % of the active set point range, sent as 0–254 |
+| `alpha2.set_control_mode` | class 3 command; `mode`: `const_pressure` (24), `prop_pressure` (23), `const_speed` (22), `const_flow` (21, ALPHA2 GO only). The ALPHA2 GO has no command for AUTOADAPT; select AUTOADAPT on the panel. On the ALPHA2 GO, LED 4 on the panel lights up when the pump has been set via Grundfos GO; the panel's control mode LEDs are then off |
+| `alpha2.set_setpoint_rem` | class 5 `ref_rem` (id 1); `value` 0–100 % of the active set point range, sent as 0–254. **Not in the ALPHA2 GO or ALPHA3 profiles**; the ALPHA2 GO reports it as 255 |
 | `alpha2.write_object` | **experimental** class 10 SET; needs `experimental_class10_write: true` |
 
 ```yaml
-- alpha2.set_setpoint_rem:
-    id: pump
-    value: 60
 - alpha2.set_control_mode:
     id: pump
-    mode: autoadapt
+    mode: const_pressure
 ```
 
-`alpha2.set_setpoint_rem` is the recommended way to change the set point. The pump may only follow the remote set point after `alpha2.remote`.
+The Grundfos GO app does not use class 3 commands to change the mode or setting. It writes `overall_control_mode_local_request_obj` (86/10), `predefined_setpoint_setting_obj` (86/350) and the `local_set_point` of the control mode objects (86/14, 86/16, 86/18) with class 10 SET. That path is still experimental here (see `alpha2.write_object` and the commented button in `alpha2go.yaml`).
 
 ### Safe write test
 
@@ -108,7 +106,7 @@ The sensor platform needs an `id` for these (`id: pump` in `alpha2go.yaml`).
 
 | `target` | Write | Precondition | If the state changed anyway |
 | --- | --- | --- | --- |
-| `ref_rem` (default) | class 5 `ref_rem` = current value | `ref_rem` is not 255 (only set in remote mode) | original value written back |
+| `ref_rem` (default) | class 5 `ref_rem` = current value | `ref_rem` is not 255. Never true on the ALPHA2 GO, which has no `ref_rem` | original value written back |
 | `start` | class 3 START | 86/8 shows operation mode Auto | LOCAL sent if the control source changed |
 | `autonight` | **UNVERIFIED** class 10 SET of 90/8 = current value; needs `experimental_class10_write: true` | – | original value written back |
 
@@ -119,9 +117,9 @@ The sensor platform needs an `id` for these (`id: pump` in `alpha2go.yaml`).
     target: start
 ```
 
-When the pump is controlled from its panel, `ref_rem` reads 255 and the default test stops without writing. Use `target: start` instead.
+On the ALPHA2 GO `ref_rem` reads 255 and the default test stops without writing. Use `target: start` instead.
 
-`alpha2go.yaml` has a "Pump Write Test" button for this. Start with `ref_rem`. Run `autonight` only to check the class 10 SET layout, ideally while capturing an HCI snoop log.
+`alpha2go.yaml` has a "Pump Write Test" button for this, using `target: start`. Run `autonight` only to check the class 10 SET layout, ideally while capturing an HCI snoop log.
 
 How writes are handled:
 
@@ -143,7 +141,8 @@ How writes are handled:
 | Temperature units | **Unverified**: values above 200 are treated as Kelvin and converted to °C |
 | Reply CRC check | Verified on an ALPHA2 GO: replies use the same CRC |
 | Class 3 commands | Verified in the Grundfos GO app and the Ontrol driver. START answered with ACK OK on an ALPHA2 GO in panel mode (`write_test target: start` PASSED). AUTOADAPT (52) is rejected by an ALPHA2 GO with ACK 2 (unknown id) and changes nothing. Other commands that change the state are not tested on hardware yet |
-| Class 5 `ref_rem` | Verified in the Grundfos GO app and the Ontrol driver |
+| Class 5 `ref_rem` | Not in the ALPHA2 GO (52_6, 52_20, 52_21) or ALPHA3 (52_1_0) profiles; the ALPHA2 GO reads it as 255 |
+| Class 10 GET 86/350, 86/351–359 | **Unverified**: ids and layout from the ALPHA2 GO profiles, not read on hardware yet |
 | Classic GET (used by `alpha2.write_test`) | Verified on an ALPHA2 GO (class 5 `ref_rem` read) |
 | Class 10 SET (`alpha2.write_object`) | **Experimental**: layout guessed from the GET reply, still needs confirmation with an HCI snoop log. Off by default |
 | ALPHA3 | Not tested with this component |
@@ -155,7 +154,7 @@ This project is based on work by:
 - **[parameter-pollution/esphome-grundfos-alpha2-go](https://github.com/parameter-pollution/esphome-grundfos-alpha2-go)** — Alpha2 Go component with adjusted GENI request/response bytes discovered via Android HCI logging + Wireshark.
 - **[esphome/esphome — alpha3 component](https://github.com/esphome/esphome/tree/dev/esphome/components/alpha3)** — The original ESPHome Alpha3 component that the Alpha2 variant is derived from.
 
-GENI frame format, object layouts and command ids were checked against the Grundfos GO app and the Ontrol GENI driver.
+GENI frame format, object layouts and command ids were checked against the Grundfos GO app, including its GENI profiles for the ALPHA2 GO (unit family/type 52_6, 52_20, 52_21) and ALPHA3 (52_1_0), and the Ontrol GENI driver.
 
 ## Hardware
 

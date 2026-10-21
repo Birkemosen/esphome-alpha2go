@@ -44,24 +44,18 @@ static const size_t FRAME_OVERHEAD = 4;    // SD + LEN + 2 byte CRC
 static const size_t APDU_MAX_DATA = 0x3F;  // 6 bit length field
 static const size_t FRAME_MAX = 2 + 255 + 2;
 
-// Class 3 command ids
+// Class 3 command ids, from the ALPHA2 GO GENI profiles in the Grundfos GO app (52_6, 52_20, 52_21).
+// The ALPHA3 profile (52_1_0) has the same ids except CONST_FLOW.
 static const uint8_t CMD_STOP = 5;
-static const uint8_t CMD_START = 6;
+static const uint8_t CMD_START = 6;  // "AUTO" in the profiles
 static const uint8_t CMD_REMOTE = 7;
 static const uint8_t CMD_LOCAL = 8;
-static const uint8_t CMD_CONST_FREQ = 22;
+static const uint8_t CMD_CONST_FLOW = 21;  // ALPHA2 GO only
+static const uint8_t CMD_CONST_SPEED = 22;
 static const uint8_t CMD_PROP_PRESS = 23;
 static const uint8_t CMD_CONST_PRESS = 24;
 static const uint8_t CMD_MIN = 25;
 static const uint8_t CMD_MAX = 26;
-static const uint8_t CMD_REF_UP = 33;
-static const uint8_t CMD_REF_DOWN = 34;
-static const uint8_t CMD_AUTOADAPT = 52;
-static const uint8_t CMD_CONST_TEMP = 61;
-static const uint8_t CMD_CONST_FLOW = 63;
-static const uint8_t CMD_FLOW_ADAPT = 65;
-static const uint8_t CMD_NIGHT_RED_ENABLE = 66;
-static const uint8_t CMD_NIGHT_RED_DISABLE = 67;
 
 // Class 5 reference ids
 static const uint8_t REF_REM = 1;  // 0..254 = 0..100 % of active setpoint range

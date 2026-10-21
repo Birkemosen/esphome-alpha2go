@@ -9,12 +9,13 @@ CONF_CONTROL_MODE = "control_mode"
 CONF_OPERATION_MODE = "operation_mode"
 CONF_CONTROL_SOURCE = "control_source"
 CONF_SETTING = "setting"
+CONF_SELECTED_SETTING = "selected_setting"
 CONF_CONST_PRESSURE_LEVELS = "const_pressure_levels"
 CONF_PROP_PRESSURE_LEVELS = "prop_pressure_levels"
 CONF_CONST_SPEED_LEVELS = "const_speed_levels"
 
-# Panel settings I/II/III read from one ALPHA2 GO. Other pump sizes may use other values;
-# the log shows the set points, so they can be checked and overridden in YAML.
+# Panel settings I/II/III read from one ALPHA2 GO. They are only used until the pump's own
+# values (86/351..359) have been read after connecting.
 DEFAULT_CONST_PRESSURE_LEVELS = [2.5, 5.0, 7.5]  # m
 DEFAULT_PROP_PRESSURE_LEVELS = [4.0, 6.0, 8.0]  # m
 DEFAULT_CONST_SPEED_LEVELS = [5225, 5877, 6350]  # 86/8 set point, probably RPM
@@ -32,6 +33,8 @@ TEXT_SENSORS = {
     CONF_CONTROL_MODE: text_sensor.text_sensor_schema(icon="mdi:tune"),
     CONF_OPERATION_MODE: text_sensor.text_sensor_schema(icon="mdi:pump"),
     CONF_CONTROL_SOURCE: text_sensor.text_sensor_schema(icon="mdi:remote"),
+    # predefined_setpoint_setting_obj (86/350) as reported by the pump, e.g. "Proportional pressure II".
+    CONF_SELECTED_SETTING: text_sensor.text_sensor_schema(icon="mdi:numeric"),
     # I, II, III, AUTOADAPT or Advanced (set in Grundfos GO), worked out from the set points.
     CONF_SETTING: text_sensor.text_sensor_schema(icon="mdi:numeric").extend(
         {

@@ -44,7 +44,7 @@ WRITE_TEST_TARGETS = {
     "start": WriteTestTarget.WRITE_TEST_START,
 }
 
-# Classic GENI class 3 commands, verified in the Grundfos GO app and the Ontrol driver.
+# Classic GENI class 3 commands, from the ALPHA2 GO and ALPHA3 GENI profiles in the Grundfos GO app.
 COMMANDS = {
     "start": 6,
     "stop": 5,
@@ -55,13 +55,12 @@ COMMANDS = {
 }
 
 # Values accepted by alpha2.set_control_mode, mapped to class 3 commands in C++.
+# The ALPHA2 GO profiles have no command for AUTOADAPT (52 was rejected with "unknown id").
 CONTROL_MODES = [
     "const_pressure",
     "prop_pressure",
-    "autoadapt",
-    "const_temp",
-    "const_flow",
-    "flow_adapt",
+    "const_speed",
+    "const_flow",  # ALPHA2 GO only
 ]
 
 # class10_set header (id, sub, type, version, size) is 9 bytes of the 63 byte APDU limit.

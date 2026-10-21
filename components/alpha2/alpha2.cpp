@@ -59,6 +59,18 @@ static std::string operation_mode_to_string_(uint8_t value) {
       return "Max";
     case 4:
       return "User defined";
+    case 5:
+      return "Forced start";
+    case 6:
+      return "No command";
+    case 7:
+      return "Hand";
+    case 8:
+      return "Standby";
+    case 9:
+      return "Stop without delay";
+    case 10:
+      return "Emergency run";
     default:
       return "Unknown (" + to_string(value) + ")";
   }
@@ -76,19 +88,47 @@ static std::string control_mode_to_string_(uint8_t value) {
       return "AUTOadapt";
     case 6:
       return "Constant temperature";
+    case 7:
+      return "Closed loop sensor";
     case 8:
       return "Constant flow";
     case 9:
+      return "Constant level";
+    case 10:
       return "FlowAdapt";
+    case 11:
+      return "Constant differential pressure";
+    case 12:
+      return "Constant differential temperature";
     case 13:
-      // Observed on an ALPHA2 GO with the panel set to proportional pressure + AUTOADAPT.
+      // AutoAdaptRadiator in the profiles; the ALPHA2 GO panel calls it proportional pressure + AUTOADAPT.
       return "Proportional pressure AUTOADAPT";
     case 14:
-      // Observed on an ALPHA2 GO with the panel set to constant pressure (coil icon) + AUTOADAPT.
+      // AutoAdaptUnderfloor in the profiles; the ALPHA2 GO panel calls it constant pressure + AUTOADAPT.
       return "Constant pressure AUTOADAPT";
+    case 15:
+      return "AUTOADAPT radiator and underfloor";
+    case 254:
+      return "None";
     default:
       return "Unknown (" + to_string(value) + ")";
   }
+}
+
+// UserSettingType, as used by predefined_setpoint_setting_obj (86/350)
+static std::string user_setting_to_string_(uint8_t value) {
+  static const char *const NAMES[] = {
+      "Constant curve I",        "Constant curve II",      "Constant curve III",
+      "Constant pressure I",     "Constant pressure II",   "Constant pressure III",
+      "Proportional pressure I", "Proportional pressure II", "Proportional pressure III",
+      "Constant curve AUTOADAPT", "Constant pressure AUTOADAPT", "Proportional pressure AUTOADAPT",
+      "PWM A profile 1",         "PWM A profile 2",        "PWM A profile 3",
+      "PWM C",                   "Analogue 0-10 V",        "TRC1",
+      "Constant speed AUTOADAPT", "TRC2",                  "TRC3",
+  };
+  if (value < sizeof(NAMES) / sizeof(NAMES[0]))
+    return NAMES[value];
+  return "Unknown (" + to_string(value) + ")";
 }
 
 static std::string control_source_to_string_(uint8_t value) {
@@ -97,8 +137,24 @@ static std::string control_source_to_string_(uint8_t value) {
       return "Panel";
     case 2:
       return "Bus";
+    case 3:
+      return "Link";
+    case 4:
+      return "External IO";
+    case 5:
+      return "Off button";
+    case 8:
+      return "Event action";
+    case 104:
+      return "AutoNight";
+    case 111:
+      return "Air venting";
+    case 123:
+      return "PWM";
+    case 127:
+      return "Temporary operation control";
     default:
-      // TODO: more sources exist in the Grundfos profiles, add them once confirmed.
+      // The profiles list more sources (ControlSource enum); these are the ones likely on a circulator.
       return "Unknown (" + to_string(value) + ")";
   }
 }
@@ -132,6 +188,7 @@ void Alpha2::dump_config() {
   LOG_TEXT_SENSOR(" ", "Operation mode", this->operation_mode_text_sensor_);
   LOG_TEXT_SENSOR(" ", "Control source", this->control_source_text_sensor_);
   LOG_TEXT_SENSOR(" ", "Setting", this->setting_text_sensor_);
+  LOG_TEXT_SENSOR(" ", "Selected setting", this->selected_setting_text_sensor_);
   if (this->setting_text_sensor_ != nullptr) {
     ESP_LOGCONFIG(TAG, "    Constant pressure levels: %.2f / %.2f / %.2f m", this->const_pressure_levels_[0],
                   this->const_pressure_levels_[1], this->const_pressure_levels_[2]);
@@ -274,6 +331,7 @@ void Alpha2::reset_link_state_() {
   this->response_length_ = 0;
   this->pending_.clear();
   this->queue_.clear();
+  this->predefined_levels_requested_ = false;
   if (this->test_running_)
     this->test_abort_("connection reset");
 }
@@ -493,6 +551,20 @@ void Alpha2::handle_object_(const PendingRequest *request, uint16_t type, uint8_
                request->sub_id, version, (unsigned) size);
       this->handle_control_mode_config_(request->sub_id, obj, size);
       break;
+    case TYPE_PREDEFINED_SETTING:
+      ESP_LOGD(TAG, "[%s] PREDEFINED SETTING Response (v%u, %u bytes)", this->parent_->address_str(), version,
+               (unsigned) size);
+      this->handle_predefined_setting_(obj, size);
+      break;
+    case TYPE_PREDEFINED_CONFIG:
+      if (request == nullptr || request->object_id != OBJ_OPERATION_ID ||
+          request->sub_id < OBJ_PREDEFINED_CONFIG_FIRST_SUB ||
+          request->sub_id >= OBJ_PREDEFINED_CONFIG_FIRST_SUB + PREDEFINED_LEVEL_COUNT) {
+        ESP_LOGD(TAG, "[%s] ignoring predefined setpoint config from unknown id", this->parent_->address_str());
+        break;
+      }
+      this->handle_predefined_config_(request->sub_id, obj, size);
+      break;
     default:
       ESP_LOGW(TAG, "[%s] unknown GENI object type %u (v%u, %u bytes)", this->parent_->address_str(), type, version,
                (unsigned) size);
@@ -590,6 +662,44 @@ void Alpha2::handle_control_mode_config_(uint16_t sub, const uint8_t *obj, size_
   // proportional pressure I/II/III = 4.0/6.0/8.0 m). UNVERIFIED for 86/20 and 86/22.
   if (sensor != nullptr)
     sensor->publish_state(set_point / PUMP_PA_PER_METER);
+}
+
+void Alpha2::handle_predefined_setting_(const uint8_t *obj, size_t size) {
+  if (size < 1)
+    return;
+  ESP_LOGD(TAG, "[%s]   selected_setting %u", this->parent_->address_str(), obj[0]);
+#ifdef USE_TEXT_SENSOR
+  if (this->selected_setting_text_sensor_ != nullptr)
+    this->selected_setting_text_sensor_->publish_state(user_setting_to_string_(obj[0]));
+#endif
+}
+
+void Alpha2::handle_predefined_config_(uint16_t sub, const uint8_t *obj, size_t size) {
+  const uint8_t index = sub - OBJ_PREDEFINED_CONFIG_FIRST_SUB;
+  if (size < PSC_SIZE) {
+    ESP_LOGW(TAG, "[%s] predefined setpoint config 86/%u too short (%u bytes)", this->parent_->address_str(), sub,
+             (unsigned) size);
+    return;
+  }
+  const uint8_t mode = obj[PSC_CONTROL_MODE];
+  const float set_point = geni::read_float_be(obj + PSC_SET_POINT);
+  ESP_LOGD(TAG, "[%s] predefined setting %s (86/%u): control mode %u, set point %.2f", this->parent_->address_str(),
+           user_setting_to_string_(index).c_str(), sub, mode, set_point);
+  // UNVERIFIED: units assumed to match 86/8 (Pa in the pressure modes, RPM in constant speed). Values that
+  // do not fit are ignored so the YAML levels stay in use.
+  const uint8_t level = index % 3;
+  if (index < 3 && mode == 2 && set_point >= 100.0F && set_point <= 20000.0F) {
+    this->const_speed_levels_[level] = set_point;
+  } else if (index >= 3 && index < 6 && mode == 0 && set_point / PUMP_PA_PER_METER >= 0.5F &&
+             set_point / PUMP_PA_PER_METER <= 20.0F) {
+    this->const_pressure_levels_[level] = set_point / PUMP_PA_PER_METER;
+  } else if (index >= 6 && index < 9 && mode == 1 && set_point / PUMP_PA_PER_METER >= 0.5F &&
+             set_point / PUMP_PA_PER_METER <= 20.0F) {
+    this->prop_pressure_levels_[level] = set_point / PUMP_PA_PER_METER;
+  } else {
+    ESP_LOGW(TAG, "[%s] predefined setting %s not used: control mode %u, set point %.2f",
+             this->parent_->address_str(), user_setting_to_string_(index).c_str(), mode, set_point);
+  }
 }
 
 void Alpha2::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param) {
@@ -751,9 +861,10 @@ bool Alpha2::set_control_mode(const std::string &mode) {
     const char *name;
     uint8_t command;
   } MODES[] = {
-      {"const_pressure", geni::CMD_CONST_PRESS}, {"prop_pressure", geni::CMD_PROP_PRESS},
-      {"autoadapt", geni::CMD_AUTOADAPT},        {"const_temp", geni::CMD_CONST_TEMP},
-      {"const_flow", geni::CMD_CONST_FLOW},      {"flow_adapt", geni::CMD_FLOW_ADAPT},
+      {"const_pressure", geni::CMD_CONST_PRESS},
+      {"prop_pressure", geni::CMD_PROP_PRESS},
+      {"const_speed", geni::CMD_CONST_SPEED},
+      {"const_flow", geni::CMD_CONST_FLOW},
   };
   for (const auto &entry : MODES) {
     if (mode == entry.name)
@@ -999,6 +1110,16 @@ void Alpha2::update() {
                        OBJ_CONFIG_AUTOADAPT_UNDERFLOOR_SUB}) {
     if (this->want_config_(sub))
       this->request_object_(OBJ_OPERATION_ID, sub, TYPE_CONTROL_MODE_CONFIG);
+  }
+#ifdef USE_TEXT_SENSOR
+  if (this->selected_setting_text_sensor_ != nullptr)
+    this->request_object_(OBJ_OPERATION_ID, OBJ_PREDEFINED_SETTING_SUB, TYPE_PREDEFINED_SETTING);
+#endif
+  // The panel levels I/II/III only change from Grundfos GO, so read them once per connection.
+  if (this->want_setting_() && !this->predefined_levels_requested_) {
+    this->predefined_levels_requested_ = true;
+    for (uint8_t i = 0; i < PREDEFINED_LEVEL_COUNT; i++)
+      this->request_object_(OBJ_OPERATION_ID, OBJ_PREDEFINED_CONFIG_FIRST_SUB + i, TYPE_PREDEFINED_CONFIG);
   }
 }
 

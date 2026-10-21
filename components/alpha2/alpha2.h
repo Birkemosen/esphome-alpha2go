@@ -37,7 +37,7 @@ static const uint32_t GENI_REPLY_TIMEOUT_MS = 1000;
 // Minimum time between two frames sent to the pump.
 static const uint32_t GENI_REQUEST_SPACING_MS = 25;
 // Frames waiting to be sent (polls and writes); more are refused.
-static const size_t GENI_QUEUE_MAX = 12;
+static const size_t GENI_QUEUE_MAX = 20;
 // Delay before polling again after a write was acknowledged, so the new state shows up quickly.
 static const uint32_t GENI_REFRESH_AFTER_WRITE_MS = 500;
 
@@ -53,6 +53,11 @@ static const uint16_t OBJ_CONFIG_CONST_PRESSURE_SUB = 16;
 static const uint16_t OBJ_CONFIG_PROP_PRESSURE_SUB = 18;
 static const uint16_t OBJ_CONFIG_AUTOADAPT_RADIATOR_SUB = 20;
 static const uint16_t OBJ_CONFIG_AUTOADAPT_UNDERFLOOR_SUB = 22;
+// predefined_setpoint_setting_obj: the setting chosen on the panel or in Grundfos GO
+static const uint16_t OBJ_PREDEFINED_SETTING_SUB = 350;
+// predefined_setpoint_config_obj[i] = 86/(351 + i), i = UserSettingType (CC1..PP3 = 0..8)
+static const uint16_t OBJ_PREDEFINED_CONFIG_FIRST_SUB = 351;
+static const uint8_t PREDEFINED_LEVEL_COUNT = 9;
 static const uint8_t OBJ_AUTONIGHT_ID = 90;
 static const uint16_t OBJ_AUTONIGHT_SUB = 8;
 
@@ -93,6 +98,14 @@ static const size_t CFG_PID_KP = 6;
 static const size_t CFG_PID_TI = 10;
 static const size_t CFG_PID_TD = 14;
 static const size_t CFG_SIZE = 18;
+
+// PredefinedSetpointSetting (1 byte): selected_setting (UserSettingType)
+static const uint16_t TYPE_PREDEFINED_SETTING = 868;
+// PredefinedSetpointConfiguration (5 bytes): control_mode(u8) set_point(float BE)
+static const uint16_t TYPE_PREDEFINED_CONFIG = 869;
+static const size_t PSC_CONTROL_MODE = 0;
+static const size_t PSC_SET_POINT = 1;
+static const size_t PSC_SIZE = 5;
 
 // The pump converts head to pressure with 9804 Pa/m: constant pressure settings I/II/III were
 // reported as exactly 24510, 49020 and 73530 Pa (2.5, 5.0 and 7.5 m).
@@ -149,6 +162,7 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   SUB_TEXT_SENSOR(operation_mode)
   SUB_TEXT_SENSOR(control_source)
   SUB_TEXT_SENSOR(setting)  // I, II, III, AUTOADAPT or Advanced
+  SUB_TEXT_SENSOR(selected_setting)  // 86/350 as reported by the pump
 #endif
 
   // Panel settings I/II/III, used by the setting text sensor. Pressures in m, speed as in 86/8.
@@ -161,7 +175,7 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   // Write requests. Each one queues a single frame that is sent from loop() once no other reply is
   // outstanding; the ACK from the pump is logged. Returns false if the request was refused.
   bool send_command(uint8_t command, const char *name);
-  // mode: const_pressure, prop_pressure, autoadapt, const_temp, const_flow, flow_adapt
+  // mode: const_pressure, prop_pressure, const_speed, const_flow
   bool set_control_mode(const std::string &mode);
   // Remote set point (class 5 ref_rem) in percent of the active set point range.
   bool set_setpoint_rem(float percent);
@@ -220,6 +234,7 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   std::array<float, 3> const_pressure_levels_{};
   std::array<float, 3> prop_pressure_levels_{};
   std::array<float, 3> const_speed_levels_{};
+  bool predefined_levels_requested_{false};  // 86/351..359 are read once per connection
 
   bool want_motor_state_() const;
   bool want_process_values_() const;
@@ -263,6 +278,8 @@ class Alpha2 final : public esphome::ble_client::BLEClientNode, public PollingCo
   void handle_motor_state_(const uint8_t *obj, size_t size);
   void handle_operation_request_(const uint8_t *obj, size_t size);
   void handle_control_mode_config_(uint16_t sub, const uint8_t *obj, size_t size);
+  void handle_predefined_setting_(const uint8_t *obj, size_t size);
+  void handle_predefined_config_(uint16_t sub, const uint8_t *obj, size_t size);
 };
 
 }  // namespace esphome::alpha2

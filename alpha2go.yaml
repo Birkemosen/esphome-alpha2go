@@ -144,26 +144,17 @@ text_sensor:
     #   const_speed_levels: [5225, 5877, 6350]
     setting:
       name: "Pump Setting"
+    # The setting as the pump reports it (86/350), e.g. "Proportional pressure II"
+    selected_setting:
+      name: "Pump Selected Setting"
 
 # --- Writing to the pump ------------------------------------------------------
 # Every write is logged (request bytes and the pump's ACK). Check the log after
 # the first write. The pump may only accept a remote set point after "Pump Remote".
 
 # Remote set point in % of the active set point range (class 5 ref_rem).
-number:
-  - platform: template
-    name: "Pump Setpoint Remote"
-    icon: mdi:gauge
-    min_value: 0
-    max_value: 100
-    step: 1
-    unit_of_measurement: "%"
-    mode: slider
-    optimistic: true
-    set_action:
-      - alpha2.set_setpoint_rem:
-          id: pump
-          value: !lambda 'return x;'
+# alpha2.set_setpoint_rem (class 5 ref_rem) is not in the ALPHA2 GO profiles; the pump
+# reports it as 255, so there is no set point slider here.
 
 select:
   - platform: template
@@ -171,30 +162,21 @@ select:
     icon: mdi:tune
     optimistic: true
     options:
-      - autoadapt
       - prop_pressure
       - const_pressure
-      - const_temp
+      - const_speed
       - const_flow
-      - flow_adapt
     set_action:
       - alpha2.set_control_mode:
           id: pump
           mode: !lambda 'return x;'
 
 button:
-  # Safe test of the write path: reads ref_rem, writes the same value back and reads it
-  # again. The pump's state does not change. Look for "write test ... PASSED" in the log.
+  # Safe test of the write path: sends START, but only if the pump already runs in Auto,
+  # and checks that nothing changed. Look for "write test ... PASSED" in the log.
+  # (target: ref_rem does not work on the ALPHA2 GO, which has no ref_rem.)
   - platform: template
     name: "Pump Write Test"
-    icon: mdi:test-tube
-    entity_category: diagnostic
-    on_press:
-      - alpha2.write_test: pump
-  # If the pump is run from its panel, ref_rem is not set and the test above stops
-  # without writing. This one sends START, but only if the pump already runs in Auto.
-  - platform: template
-    name: "Pump Write Test Start"
     icon: mdi:test-tube
     entity_category: diagnostic
     on_press:
@@ -209,6 +191,20 @@ button:
   #     - alpha2.write_test:
   #         id: pump
   #         target: autonight
+  # EXPERIMENTAL: select a panel setting by writing predefined_setpoint_setting_obj (86/350),
+  # which is what the Grundfos GO app does. The class 10 SET layout is UNVERIFIED.
+  # Needs experimental_class10_write: true. data: 0-2 = CC I-III, 3-5 = CP I-III,
+  # 6-8 = PP I-III, 10 = CP AUTOADAPT, 11 = PP AUTOADAPT.
+  # - platform: template
+  #   name: "Pump Setting PP II (experimental)"
+  #   on_press:
+  #     - alpha2.write_object:
+  #         id: pump
+  #         object_id: 86
+  #         sub_id: 350
+  #         type: 868
+  #         version: 1
+  #         data: [7]
   - platform: template
     name: "Pump Start"
     on_press:
