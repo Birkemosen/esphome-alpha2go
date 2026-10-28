@@ -1,0 +1,435 @@
+esphome:
+  name: alpha2go
+  friendly_name: "Grundfos Alpha2 Go"
+  min_version: 2026.9.0
+
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+    #sdkconfig_options: 
+      # Improve WiFi/BLE coexistence on single-radio ESP32-C3
+      #CONFIG_ESP_COEX_SW_COEXIST_ENABLE: "y"
+      #CONFIG_ESP_WIFI_SW_COEXIST_ENABLE: "y"
+      # Disable WPA3 - fixes auth issues with UniFi APs
+      #CONFIG_ESP_WIFI_ENABLE_WPA3_SAE: "n"
+      #CONFIG_ESP_WIFI_ENABLE_SAE_PK: "n"
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # WiFi optimization for hardware interference
+  power_save_mode: none          # Disable power saving for better stability
+  output_power: 8.5              # Reduce TX power (default 20dB) - try 15dB or 12dB if issues persist
+  fast_connect: true             # Skip scanning, connect faster (requires static IP)
+  # enable_btm: false              # Disable BSS Transition Management
+  # enable_rrm: false              # Disable Radio Resource Management
+
+  # Enable fallback hotspot in case wifi connection fails
+  ap:
+    ssid: "Alpha2Go_Fallback_Hotspot"
+    password: !secret fallback_hotspot_password
+  
+  #manual_ip: 
+  #  static_ip: xxx.xxx.xxx.xxx
+  #  gateway: xxx.xxx.xxx.xxx
+  #  subnet: 255.255.255.0
+    
+captive_portal:
+
+# Web interface for local access
+web_server:
+  port: 80
+
+# Load alpha2 from this GitHub repository (components/alpha2).
+external_components:
+  - source: github://birkemosen/esphome-alpha2go
+    components: [alpha2]
+
+# BLE tracker - tuned for WiFi coexistence on single-radio ESP32-C3
+esp32_ble_tracker:
+  id: ble_tracker
+  scan_parameters:
+    active: false
+    interval: 1200ms   # scan every 1.2s (default 320ms) - gives WiFi much more airtime
+    window: 30ms       # short scan window to minimize radio contention
+
+# BLE client connection to the pump
+ble_client:
+  - mac_address: XX:XX:XX:XX:XX:XX  # Replace with your pump's Bluetooth MAC address
+    id: heatingpump
+
+# Status LED on GPIO8 - shows WiFi connection state
+# Solid = connected, Blinking = connecting/no WiFi
+status_led:
+  pin:
+    number: GPIO8
+
+# Alpha2 sensor platform
+sensor:
+  - platform: alpha2
+    id: pump                     # needed by text_sensor and the alpha2.* actions below
+    ble_client_id: heatingpump
+    # experimental_class10_write: false   # any class 10 SET via alpha2.write_object
+    flow:
+      id: pump_flow
+      name: "Pump Flow"
+    head:
+      name: "Pump Head Pressure"
+    speed:
+      name: "Pump Speed"
+    power:
+      name: "Pump Power"
+    voltage:
+      name: "Pump Voltage"
+    current:
+      name: "Pump Current"
+    # Optional extra sensors
+    media_temperature:
+      name: "Pump Media Temperature"
+    differential_temperature:
+      name: "Pump Differential Temperature"
+    flow_coefficient_kv:
+      name: "Pump Flow Coefficient Kv"
+    grid_voltage:
+      name: "Pump Grid Voltage"
+    dc_link_voltage:
+      name: "Pump DC Link Voltage"
+    absolute_speed:
+      name: "Pump Absolute Speed"
+    converter_temperature:
+      name: "Pump Converter Temperature"
+    inverter_temperature:
+      name: "Pump Inverter Temperature"
+    setpoint:
+      name: "Pump Setpoint"
+    setpoint_head:
+      name: "Pump Setpoint Head"
+    setpoint_speed:
+      name: "Pump Setpoint Speed"
+    # Stored set point per control mode (ControlModeUserConfiguration)
+    const_pressure_setpoint:
+      id: pump_cp_setpoint
+      name: "Pump Constant Pressure Setpoint"
+    prop_pressure_setpoint:
+      id: pump_pp_setpoint
+      name: "Pump Proportional Pressure Setpoint"
+    const_speed_setpoint:
+      id: pump_cc_setpoint
+      name: "Pump Constant Curve Setpoint"
+    const_flow_setpoint:
+      id: pump_cf_setpoint
+      name: "Pump Constant Flow Setpoint"
+    # Flow limiters (also read while they are off)
+    max_flow_limit:
+      id: pump_max_flow_limit
+      name: "Pump Max Flow Limit Value"
+    min_flow_limit:
+      id: pump_min_flow_limit
+      name: "Pump Min Flow Limit Value"
+
+  # The same flow in l/min (1 m³/h = 16.667 l/min)
+  - platform: copy
+    source_id: pump_flow
+    name: "Pump Flow l/min"
+    unit_of_measurement: l/min
+    accuracy_decimals: 1
+    filters:
+      - multiply: 16.6667
+
+# What the pump actually runs (object 86/8, read only)
+text_sensor:
+  - platform: alpha2
+    alpha2_id: pump
+    control_mode:
+      name: "Pump Control Mode"
+    operation_mode:
+      name: "Pump Operation Mode"
+    control_source:
+      name: "Pump Control Source"
+    # I / II / III, AUTOADAPT or Advanced. The levels default to the values read
+    # from an ALPHA2 GO; check them in the log and override if your pump differs:
+    #   const_pressure_levels: [2.5, 5.0, 7.5]   # m
+    #   prop_pressure_levels: [4.0, 6.0, 8.0]    # m
+    #   const_speed_levels: [5225, 5877, 6350]
+    setting:
+      name: "Pump Setting"
+    # The setting as the pump reports it (86/350), e.g. "Proportional pressure II"
+    selected_setting:
+      name: "Pump Selected Setting"
+
+# --- Writing to the pump ------------------------------------------------------
+# Every write is logged (request bytes and the pump's ACK). Check the log after
+# the first write. The pump may only accept a remote set point after "Pump Remote".
+
+# alpha2.set_setpoint_rem (class 5 ref_rem) is not supported by the ALPHA2 GO, which
+# reports it as 255, so there is no remote set point slider here.
+
+# On while the pump runs CP or PP AUTOADAPT
+binary_sensor:
+  - platform: alpha2
+    alpha2_id: pump
+    autoadapt:
+      name: "Pump AUTOADAPT"
+    autonight:
+      id: pump_autonight
+      name: "Pump AutoNight Enabled"
+    max_flow_limit_enabled:
+      id: pump_max_flow_enabled
+      name: "Pump Max Flow Limit Enabled"
+    min_flow_limit_enabled:
+      id: pump_min_flow_enabled
+      name: "Pump Min Flow Limit Enabled"
+
+# Panel setting. Shows what the pump runs ("advanced" for any other set point) and,
+# when changed, writes the control mode (86/10) and, for I/II/III, the set point the
+# pump has stored for that setting.
+select:
+  - platform: alpha2
+    alpha2_id: pump
+    setting:
+      name: "Pump Setting Control"
+
+# A set point of your choice ("Advanced" on the panel). Values outside the pump's own
+# min/max are refused before anything is written.
+number:
+  - platform: template
+    name: "Pump Set Constant Pressure"
+    icon: mdi:gauge
+    unit_of_measurement: m
+    min_value: 1.0
+    max_value: 8.5
+    step: 0.1
+    update_interval: 15s
+    lambda: 'return id(pump_cp_setpoint).state;'
+    set_action:
+      - alpha2.set_setpoint:
+          id: pump
+          mode: const_pressure
+          value: !lambda 'return x;'
+  - platform: template
+    name: "Pump Set Proportional Pressure"
+    icon: mdi:chart-line
+    unit_of_measurement: m
+    min_value: 1.5
+    max_value: 8.5
+    step: 0.1
+    update_interval: 15s
+    lambda: 'return id(pump_pp_setpoint).state;'
+    set_action:
+      - alpha2.set_setpoint:
+          id: pump
+          mode: prop_pressure
+          value: !lambda 'return x;'
+  - platform: template
+    name: "Pump Set Constant Flow"
+    icon: mdi:waves-arrow-right
+    unit_of_measurement: m³/h
+    min_value: 0.25
+    max_value: 3.8
+    step: 0.05
+    update_interval: 15s
+    lambda: 'return id(pump_cf_setpoint).state;'
+    set_action:
+      - alpha2.set_setpoint:
+          id: pump
+          mode: const_flow
+          value: !lambda 'return x;'
+  - platform: template
+    name: "Pump Set Constant Curve"
+    icon: mdi:speedometer
+    unit_of_measurement: RPM
+    min_value: 1650
+    max_value: 6350
+    step: 10
+    update_interval: 15s
+    lambda: 'return id(pump_cc_setpoint).state;'
+    set_action:
+      - alpha2.set_setpoint:
+          id: pump
+          mode: const_speed
+          value: !lambda 'return x;'
+  # Max and min flow limits. Changing a value keeps the limiter on or off as it is;
+  # the "Pump Max/Min Flow Limit" switches below turn them on and off.
+  - platform: template
+    name: "Pump Max Flow Limit"
+    icon: mdi:car-speed-limiter
+    unit_of_measurement: m³/h
+    min_value: 2.0
+    max_value: 3.8
+    step: 0.1
+    update_interval: 15s
+    lambda: 'return id(pump_max_flow_limit).state;'
+    set_action:
+      - alpha2.set_flow_limit:
+          id: pump
+          limit: max
+          enabled: !lambda 'return id(pump_max_flow_enabled).state;'
+          value: !lambda 'return x;'
+  - platform: template
+    name: "Pump Min Flow Limit"
+    icon: mdi:car-speed-limiter
+    unit_of_measurement: m³/h
+    min_value: 0.25
+    max_value: 2.0
+    step: 0.05
+    update_interval: 15s
+    lambda: 'return id(pump_min_flow_limit).state;'
+    set_action:
+      - alpha2.set_flow_limit:
+          id: pump
+          limit: min
+          enabled: !lambda 'return id(pump_min_flow_enabled).state;'
+          value: !lambda 'return x;'
+  # Duty point: set flow and head here, then press "Pump Apply Duty Point PP" or "... CP".
+  # Nothing is sent to the pump until a button is pressed.
+  - platform: template
+    id: pump_duty_flow
+    name: "Pump Duty Point Flow"
+    icon: mdi:waves-arrow-right
+    unit_of_measurement: l/min
+    min_value: 5
+    max_value: 60
+    step: 1
+    initial_value: 17
+    optimistic: true
+    restore_value: true
+  - platform: template
+    id: pump_duty_head
+    name: "Pump Duty Point Head"
+    icon: mdi:arrow-up-bold
+    unit_of_measurement: m
+    min_value: 1.0
+    max_value: 8.5
+    step: 0.1
+    initial_value: 5.0
+    optimistic: true
+    restore_value: true
+
+# AutoNight (night setback, 90/8)
+switch:
+  - platform: template
+    name: "Pump AutoNight"
+    icon: mdi:weather-night
+    lambda: 'return id(pump_autonight).state;'
+    turn_on_action:
+      - alpha2.set_autonight:
+          id: pump
+          enabled: true
+    turn_off_action:
+      - alpha2.set_autonight:
+          id: pump
+          enabled: false
+  # Flow limiters on / off; the limit value stays as stored in the pump.
+  - platform: template
+    name: "Pump Max Flow Limit"
+    icon: mdi:car-speed-limiter
+    lambda: 'return id(pump_max_flow_enabled).state;'
+    turn_on_action:
+      - alpha2.set_flow_limit:
+          id: pump
+          limit: max
+          enabled: true
+    turn_off_action:
+      - alpha2.set_flow_limit:
+          id: pump
+          limit: max
+          enabled: false
+  - platform: template
+    name: "Pump Min Flow Limit"
+    icon: mdi:car-speed-limiter
+    lambda: 'return id(pump_min_flow_enabled).state;'
+    turn_on_action:
+      - alpha2.set_flow_limit:
+          id: pump
+          limit: min
+          enabled: true
+    turn_off_action:
+      - alpha2.set_flow_limit:
+          id: pump
+          limit: min
+          enabled: false
+
+# Class 3 commands change what the pump runs (86/8) but not the panel setting:
+#   - alpha2.set_control_mode: {id: pump, mode: const_flow}
+
+button:
+  # Safe test of the write path: sends START, but only if the pump already runs in Auto,
+  # and checks that nothing changed. Look for "write test ... PASSED" in the log.
+  # (target: ref_rem does not work on the ALPHA2 GO, which has no ref_rem.)
+  - platform: template
+    name: "Pump Write Test"
+    icon: mdi:test-tube
+    entity_category: diagnostic
+    on_press:
+      - alpha2.write_test:
+          id: pump
+          target: start
+  # Same test for the class 10 SET path (AutoNight 90/8, written back unchanged).
+  # Needs experimental_class10_write: true on the sensor platform.
+  # - platform: template
+  #   name: "Pump Write Test Class 10"
+  #   on_press:
+  #     - alpha2.write_test:
+  #         id: pump
+  #         target: autonight
+  # Duty point (alpha2.set_duty_point takes flow in m³/h, head in m). In proportional
+  # pressure Hset is worked out so the pump's own curve goes through the point; in
+  # constant pressure the head becomes the set point.
+  - platform: template
+    name: "Pump Apply Duty Point PP"
+    icon: mdi:chart-line
+    on_press:
+      - alpha2.set_duty_point:
+          id: pump
+          mode: prop_pressure
+          flow: !lambda 'return id(pump_duty_flow).state * 0.06f;'  # l/min to m³/h
+          head: !lambda 'return id(pump_duty_head).state;'
+  - platform: template
+    name: "Pump Apply Duty Point CP"
+    icon: mdi:gauge
+    on_press:
+      - alpha2.set_duty_point:
+          id: pump
+          mode: const_pressure
+          flow: !lambda 'return id(pump_duty_flow).state * 0.06f;'
+          head: !lambda 'return id(pump_duty_head).state;'
+  - platform: template
+    name: "Pump Start"
+    on_press:
+      - alpha2.start: pump
+  - platform: template
+    name: "Pump Stop"
+    on_press:
+      - alpha2.stop: pump
+  - platform: template
+    name: "Pump Min Curve"
+    on_press:
+      - alpha2.set_min: pump
+  - platform: template
+    name: "Pump Max Curve"
+    on_press:
+      - alpha2.set_max: pump
+  - platform: template
+    name: "Pump Remote"
+    on_press:
+      - alpha2.remote: pump
+  - platform: template
+    name: "Pump Local"
+    on_press:
+      - alpha2.local: pump

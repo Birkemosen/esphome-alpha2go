@@ -1,0 +1,112 @@
+# Example Home Assistant dashboard card for alpha2go.yaml.
+#
+# Shows only the controls and set points that belong to the control mode the pump runs.
+# Paste it in a dashboard via "Add card" -> "Manual". The entity ids assume the device's
+# friendly_name is "Grundfos Alpha2 Go"; replace "grundfos_alpha2_go_" if yours differs.
+type: vertical-stack
+cards:
+  - type: entities
+    title: Pump
+    entities:
+      - entity: select.grundfos_alpha2_go_pump_setting_control
+        name: Setting
+      - entity: sensor.grundfos_alpha2_go_pump_control_mode
+        name: Control mode
+      - entity: binary_sensor.grundfos_alpha2_go_pump_autoadapt
+        name: AUTOADAPT
+      - entity: sensor.grundfos_alpha2_go_pump_setpoint_head
+        name: Head set point now
+      - entity: sensor.grundfos_alpha2_go_pump_flow
+        name: Flow
+      - entity: sensor.grundfos_alpha2_go_pump_flow_l_min
+        name: Flow (l/min)
+      - entity: sensor.grundfos_alpha2_go_pump_head_pressure
+        name: Head
+      - entity: sensor.grundfos_alpha2_go_pump_power
+        name: Power
+
+  # Constant pressure
+  - type: entities
+    title: Constant pressure
+    visibility:
+      - condition: state
+        entity: sensor.grundfos_alpha2_go_pump_control_mode
+        state: Constant pressure
+    entities:
+      - entity: number.grundfos_alpha2_go_pump_set_constant_pressure
+        name: Set point
+
+  # Proportional pressure
+  - type: entities
+    title: Proportional pressure
+    visibility:
+      - condition: state
+        entity: sensor.grundfos_alpha2_go_pump_control_mode
+        state: Proportional pressure
+    entities:
+      - entity: number.grundfos_alpha2_go_pump_set_proportional_pressure
+        name: Hset
+
+  # Constant curve
+  - type: entities
+    title: Constant curve
+    visibility:
+      - condition: state
+        entity: sensor.grundfos_alpha2_go_pump_control_mode
+        state: Constant speed
+    entities:
+      - entity: number.grundfos_alpha2_go_pump_set_constant_curve
+        name: Speed
+      - entity: sensor.grundfos_alpha2_go_pump_speed
+        name: Speed now
+
+  # Constant flow
+  - type: entities
+    title: Constant flow
+    visibility:
+      - condition: state
+        entity: sensor.grundfos_alpha2_go_pump_control_mode
+        state: Constant flow
+    entities:
+      - entity: number.grundfos_alpha2_go_pump_set_constant_flow
+        name: Flow set point
+
+  # AUTOADAPT: the pump picks the set point itself, so there is nothing to set
+  - type: entities
+    title: AUTOADAPT
+    visibility:
+      - condition: state
+        entity: binary_sensor.grundfos_alpha2_go_pump_autoadapt
+        state: "on"
+    entities:
+      - entity: sensor.grundfos_alpha2_go_pump_setpoint_head
+        name: Set point chosen by the pump
+
+  # Duty point: pick flow and head, then apply as proportional or constant pressure
+  - type: entities
+    title: Duty point
+    entities:
+      - entity: number.grundfos_alpha2_go_pump_duty_point_flow
+        name: Flow
+      - entity: number.grundfos_alpha2_go_pump_duty_point_head
+        name: Head
+      - entity: button.grundfos_alpha2_go_pump_apply_duty_point_pp
+        name: Apply as proportional pressure
+      - entity: button.grundfos_alpha2_go_pump_apply_duty_point_cp
+        name: Apply as constant pressure
+
+  # Settings that apply in every control mode
+  - type: entities
+    title: Options
+    state_color: true
+    entities:
+      - entity: switch.grundfos_alpha2_go_pump_autonight
+        name: AutoNight
+      - entity: switch.grundfos_alpha2_go_pump_max_flow_limit
+        name: Max flow limit
+      - entity: number.grundfos_alpha2_go_pump_max_flow_limit
+        name: Max flow
+      - entity: switch.grundfos_alpha2_go_pump_min_flow_limit
+        name: Min flow limit
+      - entity: number.grundfos_alpha2_go_pump_min_flow_limit
+        name: Min flow

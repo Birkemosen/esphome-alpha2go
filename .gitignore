@@ -1,0 +1,15 @@
+# ESPHome build artifacts
+.esphome/
+
+# Python
+__pycache__/
+
+# Secrets - do NOT commit
+secrets.yaml
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
